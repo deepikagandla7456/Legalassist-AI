@@ -31,7 +31,7 @@ class InvalidTokenError(AuthError):
 
 
 settings = get_settings()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
 
@@ -272,14 +272,17 @@ async def get_current_user_optional(
     """Get current user without raising on missing credentials.
 
     Returns the authenticated CurrentUser when valid credentials are present,
-    or None for unauthenticated requests.  Use this dependency wherever the
-    caller must handle anonymous traffic gracefully (e.g. rate-limit key
-    generation) rather than enforcing authentication.
+    or None when the request is truly anonymous. Invalid, expired, revoked,
+    or insufficient credentials still raise HTTPException so callers do not
+    accidentally treat failed authentication as unauthenticated access.
     """
+    if not token and not http_auth:
+        return None
+
     try:
         return await get_current_user(token=token, http_auth=http_auth)
     except HTTPException:
-        return None
+        raise
 
 
 async def get_admin_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
