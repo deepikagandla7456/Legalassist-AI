@@ -105,17 +105,6 @@ def get_api_semaphore() -> threading.Semaphore:
     return _API_SEMAPHORE
 
 
-def _reinitialize_semaphore(concurrency: int) -> None:
-    """Replace the global API semaphore with a new one sized to *concurrency*.
-
-    Calling this before any worker threads are spawned ensures the correct
-    limit is applied regardless of whether execution entered through main()
-    or directly via process_command / batch_command (e.g. in tests).
-    """
-    global API_SEMAPHORE
-    API_SEMAPHORE = threading.Semaphore(concurrency)
-
-
 
 class CLIError(Exception):
     pass
