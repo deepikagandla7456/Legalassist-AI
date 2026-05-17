@@ -96,6 +96,19 @@ _scheduler: Optional[BackgroundScheduler] = None
 notification_service = NotificationService()
 
 
+def _shutdown_scheduler_instance(scheduler, *, wait: bool = True):
+    """Shut down a scheduler instance once, if it is running."""
+    if not scheduler:
+        return
+
+    try:
+        if scheduler.running:
+            scheduler.shutdown(wait=wait)
+            logger.info("Scheduler shutdown complete.")
+    except Exception as e:
+        logger.error(f"Error during scheduler shutdown: {e}")
+
+
 # Reminder time logic moved to notifications.reminder_engine.build_reminder_jobs
 
 
@@ -371,10 +384,9 @@ def start_scheduler():
 def stop_scheduler():
     """Stop the background scheduler"""
     global _scheduler
-    if _scheduler and _scheduler.running:
-        _scheduler.shutdown()
-        _scheduler = None
-        logger.info("Background scheduler stopped")
+    _shutdown_scheduler_instance(_scheduler)
+    _scheduler = None
+    logger.info("Background scheduler stopped")
 
 
 def trigger_reminder_check_now():
@@ -427,26 +439,18 @@ def run_worker():
     def signal_handler(sig, frame):
         sig_name = "SIGINT" if sig == signal.SIGINT else "SIGTERM"
         logger.info(f"Received {sig_name}. Performing graceful shutdown...")
-        
-        try:
-            # shutdown(wait=True) waits for currently running jobs to finish
-            scheduler.shutdown(wait=True)
-            logger.info("Scheduler shutdown complete.")
-        except Exception as e:
-            logger.error(f"Error during scheduler shutdown: {e}")
-            
+
+        _shutdown_scheduler_instance(scheduler)
         sys.exit(0)
     
-    # Registering signals (note: limited support on Windows)
-    if os.name != 'nt':
-        try:
-            signal.signal(signal.SIGINT, signal_handler)
+    # Register SIGINT everywhere Python supports it; SIGTERM is Unix-oriented.
+    try:
+        signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, signal_handler)
-            logger.info("UNIX signal handlers registered.")
-        except ValueError:
-            logger.warning("Could not register signal handlers (not in main thread).")
-    else:
-        logger.info("Running on Windows: Use Ctrl+C for manual termination.")
+        logger.info("Signal handlers registered.")
+    except (ValueError, OSError):
+        logger.warning("Could not register signal handlers (not in main thread or unsupported platform).")
     
     logger.info("Worker initialization complete. Entering wait loop.")
     logger.info("Next job run scheduled at the start of the next hour.")
@@ -459,6 +463,8 @@ def run_worker():
     except Exception as e:
         logger.critical(f"Worker encountered a fatal error: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        _shutdown_scheduler_instance(scheduler)
 
 
 def check_reminders_sync(target_days: Optional[int] = None, db: Optional[object] = None):
