@@ -102,6 +102,9 @@ __all__ = [
     "create_otp_verification",
     "get_pending_otp",
     "mark_otp_as_used",
+    "is_email_locked_out",
+    "record_otp_failed_attempt",
+    "reset_otp_failed_attempts",
     "cleanup_expired_otps",
     "create_case",
     "get_user_cases",
@@ -172,12 +175,61 @@ def get_pending_otp(db: Session, email: str) -> Optional[OTPVerification]:
     ).order_by(OTPVerification.created_at.desc()).first()
 
 
-def mark_otp_as_used(db: Session, otp_id: int) -> None:
-    """Mark an OTP as used"""
+def mark_otp_as_used(db: Session, otp_id: int) -> bool:
+    try:
+        otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
+        if otp:
+            otp.is_used = True
+            db.commit()
+            db.refresh(otp)
+            return True
+        return False
+    except Exception:
+        db.rollback()
+        return False
+
+
+def is_email_locked_out(db: Session, email: str) -> Optional[dt.datetime]:
+    """Check if email is currently locked out. Returns locked_until if locked, None otherwise."""
+    lockout = db.query(OTPVerification).filter(
+        OTPVerification.email == email,
+        OTPVerification.locked_until != None,
+        OTPVerification.locked_until > dt.datetime.now(dt.timezone.utc)
+    ).order_by(OTPVerification.locked_until.desc()).first()
+    return lockout.locked_until if lockout else None
+
+
+def record_otp_failed_attempt(db: Session, otp_id: int, lockout_duration_minutes: int = 15, max_failed_attempts: int = 5) -> bool:
+    """Record failed OTP attempt with email-level lockout protection."""
     otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
     if otp:
-        otp.is_used = True
+        otp.failed_attempts += 1
+        if otp.failed_attempts >= max_failed_attempts:
+            # Lock out at email level, not just OTP level
+            lockout_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=lockout_duration_minutes)
+            otp.locked_until = lockout_until
+            
+            # Also lock all other pending OTPs for same email
+            db.query(OTPVerification).filter(
+                OTPVerification.email == otp.email,
+                OTPVerification.id != otp_id
+            ).update({"locked_until": lockout_until})
+        
         db.commit()
+        db.refresh(otp)
+        return True
+    return False
+
+
+def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
+    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
+    if otp:
+        otp.failed_attempts = 0
+        otp.locked_until = None
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
 
 
 def cleanup_expired_otps(db: Session) -> int:
