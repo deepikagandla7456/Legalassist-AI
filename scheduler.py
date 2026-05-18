@@ -172,6 +172,11 @@ def check_and_send_reminders():
       
     """
     
+    # ---------------------------------------------------------
+    # PERFORMANCE FIX: Move localized import out of the loop!
+    # ---------------------------------------------------------
+# ---------------------------------------------------------
+    
     logger.info("=" * 60)
     logger.info("Starting deadline reminder check job")
     logger.info(f"Check time: {datetime.now(timezone.utc)} UTC")
