@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 from typing import Dict, List, Optional
@@ -8,6 +9,14 @@ from langchain_community.vectorstores import Chroma
 from config import Config
 
 LOGGER = logging.getLogger(__name__)
+
+
+def get_judgment_hash(text: str) -> str:
+    """Generate an MD5 hash of judgment text to uniquely identify it."""
+    if not text:
+        return ""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
 
 class LegalRAG:
     def __init__(self, embedding_model_name: str = "all-MiniLM-L6-v2"):
@@ -29,6 +38,11 @@ class LegalRAG:
             chunk_overlap=180,
             separators=["\n\n", "\n", ".", " ", ""]
         )
+
+    def reset(self) -> None:
+        """Reset the vector store to clear loaded document state."""
+        LOGGER.info("Resetting LegalRAG vector store.")
+        self.vector_store = None
 
     def _is_section_header(self, line: str) -> bool:
         """Identify likely legal section headers so related rules stay together."""
