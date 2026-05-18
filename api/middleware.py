@@ -191,12 +191,22 @@ async def logging_middleware(request: Request, call_next: Callable):
             response.headers["X-Process-Time"] = str(process_time)
             response.headers["X-Request-Id"] = request_id
         
-    except Exception:
-        clear_request_context()
-        raise
+        logger.info(
+            "http_request_completed",
+            method=request.method,
+            path=endpoint,
+            status_code=response.status_code,
+            duration_ms=round(process_time * 1000, 2),
+            request_id=request_id,
+            user_id=user_id,
+        )
+        
+        response.headers["X-Process-Time"] = str(process_time)
+        response.headers["X-Request-Id"] = request_id
     
     clear_request_context()
     return response
+
 
 def _request_size_limit_for_path(path: str) -> int:
     if any(path.startswith(prefix) for prefix in UPLOAD_PATH_PREFIXES):

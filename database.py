@@ -182,6 +182,7 @@ __all__ = [
     "get_attachments_for_case",
     "submit_similarity_feedback",
     "get_similarity_feedback",
+    "aggregate_model_performance",
 ]
 
 
@@ -782,7 +783,7 @@ def create_timeline_event(
         event_date=event_date or dt.datetime.now(dt.timezone.utc),
         event_metadata=metadata,
     )
-    db.add(doc)
+    db.add(event)
     db.commit()
     db.refresh(event)
     return event
@@ -905,6 +906,10 @@ def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken
     db.commit()
     db.refresh(token)
     return token
+
+def aggregate_model_performance(db: Session, task: str = None) -> list:
+    return []
+
 
 
 def cleanup_expired_revoked_tokens(db: Session) -> int:

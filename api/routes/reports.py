@@ -144,7 +144,7 @@ async def generate_report(
         status="pending",
         report_type=request.report_type,
         format=request.format,
-        created_at=datetime.now(timezone.utc)
+        created_at=db_report.created_at
     )
 
 
@@ -201,15 +201,15 @@ async def get_report_status(
             pass
     
     return ReportGenerationResponse(
-        report_id=report_id,
-        job_id=db_report.celery_task_id,
-        case_id=str(db_report.case_id),
-        status=status_info["status"],
-        report_type="comprehensive",
-        format="pdf",
-        download_url=f"/api/v1/reports/{report_id}/download" if status_info["status"] == "completed" else None,
-        created_at=datetime.now(timezone.utc),
-        completed_at=datetime.now(timezone.utc) if status_info["status"] == "completed" else None
+        report_id=db_report.report_id,
+        job_id=db_report.job_id or "unknown",
+        case_id=db_report.case_id,
+        status=status_str,
+        report_type=db_report.report_type or "comprehensive",
+        format=db_report.format,
+        download_url=f"/api/v1/reports/{db_report.report_id}/download" if status_str == "completed" else None,
+        created_at=db_report.created_at,
+        completed_at=db_report.completed_at
     )
 
 
