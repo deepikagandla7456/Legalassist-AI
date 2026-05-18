@@ -68,14 +68,15 @@ async def analyze_document(
     )
     
     # Queue async task
-    text = request.text or f"Content from {request.file_url or request.file_path}"
     task = enqueue_task_from_http_request(
         analyze_document_task,
         http_request,
         context_user_id=current_user.user_id,
         user_id=current_user.user_id,
         document_id=document_id,
-        text=text,
+        text=request.text,
+        file_path=request.file_path,
+        file_url=request.file_url,
         document_type=request.document_type,
     )
     

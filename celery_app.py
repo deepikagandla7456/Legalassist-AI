@@ -22,6 +22,8 @@ import structlog
 import json
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+import io
+import requests
 
 from celery import Celery, Task
 from celery.result import AsyncResult
@@ -39,6 +41,15 @@ from observability.instrumentation import (
 from api.idempotency import IdempotencyManager
 from core.export_storage import save_export_file
 from config import Config
+from core.app_utils import (
+    extract_text_from_pdf,
+    get_client,
+    build_prompt,
+    build_remedies_prompt,
+    parse_remedies_response,
+    compress_text,
+)
+from api.validation import ValidationConfig
 
 # ============================================================================
 # INITIALIZATION & LOGGING
@@ -320,7 +331,13 @@ class TaskStatus:
 
 @celery_app.task(bind=True, name="analyze_document")
 def analyze_document_task(
-    self, user_id: str, document_id: str, text: str, document_type: str = "unknown"
+    self,
+    user_id: str,
+    document_id: str,
+    text: Optional[str] = None,
+    document_type: str = "unknown",
+    file_path: Optional[str] = None,
+    file_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Asynchronous task to perform deep analysis on a legal document.
@@ -331,9 +348,11 @@ def analyze_document_task(
     Args:
         user_id (str): The ID of the user who owns the document.
         document_id (str): The ID of the document to analyze.
-        text (str): The raw text content extracted from the document.
+        text (str, optional): The raw text content extracted from the document.
         document_type (str): The category of the document (e.g., 'contract', 'pleading').
-
+        file_path (str, optional): The local file path to the document.
+        file_url (str, optional): The URL to the document.
+        
     Returns:
         Dict[str, Any]: The structured analysis results including identified remedies.
     """
@@ -350,6 +369,8 @@ def analyze_document_task(
         )
         return existing or {"status": "duplicate", "task_id": self.request.id}
 
+    start_time = datetime.utcnow()
+
     try:
         # Phase 1: Text Pre-processing
         self.update_state(
@@ -363,38 +384,111 @@ def analyze_document_task(
             user_id=user_id,
             document_id=document_id,
         )
+        
+        extracted_text = text
+        if not extracted_text:
+            if file_url:
+                response = requests.get(file_url, timeout=30)
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+                if "application/pdf" in content_type or file_url.lower().endswith(".pdf"):
+                    extracted_text = extract_text_from_pdf(io.BytesIO(response.content))
+                else:
+                    extracted_text = response.content.decode("utf-8", errors="ignore")
+            elif file_path:
+                if file_path.lower().endswith(".pdf"):
+                    with open(file_path, "rb") as f:
+                        extracted_text = extract_text_from_pdf(io.BytesIO(f.read()))
+                else:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        extracted_text = f.read()
+                        
+        if not extracted_text:
+            raise ValueError("No text provided or extracted from document.")
 
-        # Simulate Phase 2: Content Analysis
-        # This would typically involve NLP or LLM calls
+        # Enforce size limits
+        if len(extracted_text.encode("utf-8")) > ValidationConfig.MAX_TEXT_LENGTH:
+            raise ValueError(f"Extracted text exceeds max limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
+
+        # Phase 2: Content Analysis
         self.update_state(
             state="PROGRESS", meta={"status": "Analyzing legal content", "progress": 50}
         )
+        
+        safe_text = compress_text(extracted_text)
+        client = get_client()
+        if not client:
+            raise RuntimeError("Failed to initialize LLM client.")
 
-        # Simulate Phase 3: Remedy Extraction
-        # Identifying specific legal remedies available to the user
+        summary_prompt = build_prompt(safe_text, "English")
+        summary_response = client.chat.completions.create(
+            model=Config.DEFAULT_MODEL,
+            messages=[{"role": "user", "content": summary_prompt}],
+            max_tokens=800,
+            temperature=0.3,
+        )
+        raw_summary = summary_response.choices[0].message.content
+        # Extract JSON bullets if possible, otherwise use raw text
+        summary_text = ""
+        key_points = []
+        try:
+            import json
+            import re
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_summary, re.DOTALL)
+            json_str = match.group(1) if match else raw_summary
+            data = json.loads(json_str)
+            key_points = data.get("bullets", [])
+            summary_text = " ".join(key_points)
+        except Exception:
+            summary_text = raw_summary
+
+        # Phase 3: Remedy Extraction
         self.update_state(
             state="PROGRESS",
             meta={"status": "Extracting identified remedies", "progress": 75},
         )
+        
+        remedies_prompt = build_remedies_prompt(safe_text, "English")
+        remedies_response = client.chat.completions.create(
+            model=Config.DEFAULT_MODEL,
+            messages=[{"role": "user", "content": remedies_prompt}],
+            max_tokens=900,
+            temperature=0.3,
+        )
+        remedies_data = parse_remedies_response(remedies_response.choices[0].message.content)
 
-        # Simulate Phase 4: Finalization
-        # Formatting the output and calculating confidence scores
+        # Phase 4: Finalization
         self.update_state(
             state="PROGRESS",
             meta={"status": "Finalizing analysis results", "progress": 90},
         )
+        
+        analysis_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        # Combine remedies into a structured array
+        remedies_list = []
+        if remedies_data.get("first_action"):
+            remedies_list.append(f"Action: {remedies_data['first_action']}")
+        if remedies_data.get("can_appeal") == "yes":
+            remedies_list.append(f"Appeal allowed in {remedies_data.get('appeal_court', 'court')} within {remedies_data.get('appeal_days', 'unknown')} days.")
+            
+        deadlines_list = []
+        if remedies_data.get("deadline"):
+            deadlines_list.append(remedies_data["deadline"])
 
-        # In a production environment, this would call the actual analysis engine
-        # located in analytics_engine.py or similar module.
         result = {
             "document_id": document_id,
-            "summary": "Document analysis completed successfully",
-            "remedies": [],
-            "deadlines": [],
+            "title": "Analyzed Document",
+            "document_type": document_type,
+            "summary": summary_text,
+            "key_points": key_points,
+            "remedies": remedies_list,
+            "deadlines": deadlines_list,
             "obligations": [],
-            "confidence_score": 0.85,
-            "analysis_time_seconds": 10.5,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "confidence_score": 0.85 if not remedies_data.get("_is_partial") else 0.6,
+            "analysis_time_seconds": analysis_time,
+            "processed_at": datetime.now(timezone.utc).isoformat()
+
         }
 
         logger.info(
