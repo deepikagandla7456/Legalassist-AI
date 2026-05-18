@@ -1,8 +1,19 @@
 """
 Report Generation Endpoints
-POST /api/v1/reports/generate - Generate report asynchronously
-GET /api/v1/reports/{report_id} - Get report status
-GET /api/v1/reports/{report_id}/download - Download report
+
+This module provides REST endpoints for generating, tracking, and downloading legal reports.
+
+Endpoints:
+- POST /api/v1/reports/generate - Generate report asynchronously
+- GET /api/v1/reports/{report_id} - Get report status  
+- GET /api/v1/reports/{report_id}/download - Download report
+- GET /api/v1/reports - List user's reports
+
+Key refactoring:
+- Uses Report DB model instead of glob patterns
+- Stores celery_task_id for reliable task tracking
+- Validates user ownership on downloads
+- No more report_id = job_id confusion
 """
 import uuid
 from fastapi import APIRouter, HTTPException, status, Depends, Request
@@ -11,6 +22,7 @@ from pathlib import Path
 from report_service import _get_reports_base_dir
 from sqlalchemy.orm import Session
 
+from report_service import _get_reports_base_dir
 from api.models import ReportGenerationRequest, ReportGenerationResponse
 from api.auth import get_current_user, CurrentUser
 from celery_app import generate_report_task, TaskStatus, enqueue_task_from_http_request
@@ -44,7 +56,8 @@ async def generate_report(
     - **format**: pdf or docx
     - **style**: formal or casual
     
-    Returns immediately with job ID
+    Returns immediately with report_id for polling status.
+    Uses DB-backed Report model for reliability.
     """
     
     logger.info(
@@ -68,13 +81,41 @@ async def generate_report(
     db.add(db_report)
     db.commit()
     
-    # Queue async task
+    # Step 1: Create and persist Report record BEFORE enqueueing task
+    # This ensures we have report_id and can track the task reliably
+    report_id = str(uuid.uuid4())
+    
+    try:
+        # Parse case_id as integer (assumes it's numeric in the DB)
+        case_id_int = int(request.case_id)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid case_id format"
+        )
+    
+    # Create Report record in DB
+    db_report = create_report(
+        db,
+        report_id=report_id,
+        user_id=current_user.user_id,
+        case_id=case_id_int,
+        celery_task_id="pending",  # Will be updated after task enqueue
+        report_type=request.report_type,
+        format=request.format,
+        style=request.style
+    )
+    
+    logger.info("Report record created", report_id=report_id, db_id=db_report.id)
+    
+    # Step 2: Queue async task with report_id parameter
     task = enqueue_task_from_http_request(
         generate_report_task,
         http_request,
         context_user_id=current_user.user_id,
-        user_id=current_user.user_id,
-        case_id=request.case_id,
+        user_id=str(current_user.user_id),
+        case_id=str(case_id_int),
+        report_id=report_id,
         report_type=request.report_type,
         format=request.format,
         report_id=report_id,
@@ -84,6 +125,17 @@ async def generate_report(
     db_report.job_id = task.id
     db.commit()
     db.refresh(db_report)
+    
+    # Step 3: Update Report record with actual celery_task_id
+    update_report_status(db, report_id, status="pending")
+    db_report = db.query(db_report.__class__).filter(
+        db_report.__class__.report_id == report_id
+    ).first()
+    db_report.celery_task_id = task.id
+    db.commit()
+    db.refresh(db_report)
+    
+    logger.info("Task enqueued", report_id=report_id, task_id=task.id)
     
     return ReportGenerationResponse(
         report_id=db_report.report_id,
@@ -106,7 +158,21 @@ async def get_report_status(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> ReportGenerationResponse:
-    """Get status of report generation job"""
+    """
+    Get status of report generation job.
+    
+    Now uses DB record for reliable status, using stored celery_task_id
+    instead of the fragile report_id-as-job_id pattern.
+    """
+    
+    # Retrieve Report record from DB
+    db_report = get_report_by_id(db, report_id, user_id=current_user.user_id)
+    
+    if not db_report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found"
+        )
     
     db_report = db.query(Report).filter(
         Report.report_id == report_id,
@@ -156,7 +222,14 @@ async def download_report(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user)
 ):
-    """Download the generated report file"""
+    """
+    Download the generated report file.
+    
+    Key improvements:
+    - Uses stored file_path from DB (no glob patterns)
+    - Validates user ownership
+    - Confirms status is completed before download
+    """
     
     db_report = db.query(Report).filter(
         Report.report_id == report_id,
@@ -198,7 +271,15 @@ async def download_report(
     if not user_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report output not found",
+            detail="Report file path not found in database"
+        )
+    
+    file_path = Path(db_report.file_path)
+    if not file_path.exists():
+        logger.error(
+            "Report file missing",
+            report_id=report_id,
+            expected_path=str(file_path)
         )
 
     ext = ".pdf" if db_report.format == "pdf" else f".{db_report.format}"
@@ -209,11 +290,16 @@ async def download_report(
     if not matches:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found",
+            detail="Report file not found on disk"
         )
-
-    file_path = matches[0]
-
+    
+    logger.info(
+        "Downloading report",
+        report_id=report_id,
+        user_id=current_user.user_id,
+        file_path=str(file_path)
+    )
+    
     return FileResponse(
         path=file_path,
         media_type="application/pdf" if db_report.format == "pdf" else "application/octet-stream",
@@ -231,7 +317,34 @@ async def list_reports(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
-    """Get list of generated reports for current user"""
+    """
+    Get list of generated reports for current user with pagination.
+    
+    Optional filters:
+    - status_filter: Filter by status (pending, processing, completed, failed)
+    """
+    
+    reports, total = list_reports_by_user(
+        db,
+        user_id=current_user.user_id,
+        limit=limit,
+        offset=offset,
+        status=status_filter
+    )
+    
+    report_dicts = [
+        {
+            "report_id": r.report_id,
+            "case_id": r.case_id,
+            "status": r.status.value,
+            "report_type": r.report_type.value,
+            "format": r.format.value,
+            "file_size_bytes": r.file_size_bytes,
+            "created_at": r.created_at.isoformat(),
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        }
+        for r in reports
+    ]
     
     query = db.query(Report).filter(Report.user_id == current_user.user_id)
     total = query.count()

@@ -35,6 +35,22 @@ from database import (
     create_attachment,
     get_attachments_for_case,
 )
+from services.timeline_service import timeline_service as _timeline_service
+from services.deadlines_auto_creator import (
+    _extract_days_from_text as _extract_days_from_text_service,
+    _validate_days_value as _validate_days_value_service,
+    auto_create_deadlines_from_remedies as _auto_create_deadlines_from_remedies_service,
+)
+from services.case_anonymization import (
+    _get_case_anonymization_secret as _get_case_anonymization_secret_service,
+    _generate_anonymized_case_id as _generate_anonymized_case_id_service,
+    generate_anonymized_case_data as generate_anonymized_case_data_service,
+)
+from services.case_queries import (
+    get_user_cases_summary as get_user_cases_summary_service,
+    get_case_detail as get_case_detail_service,
+    generate_case_summary_text as generate_case_summary_text_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +115,7 @@ def create_new_case(
         )
 
         # Create timeline event for case creation
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=case.id,
             event_type="case_created",
@@ -162,51 +178,9 @@ def get_or_create_case_for_document(
 
 
 def get_user_cases_summary(user_id: int, include_closed: bool = True) -> List[Dict[str, Any]]:
-    """
-    Get summary of all cases for a user.
-    Returns list of case summaries with latest document info.
-    """
     db = SessionLocal()
     try:
-        cases = get_user_cases(db, user_id, include_closed=include_closed)
-        summaries = []
-
-        for case in cases:
-            # Get latest document
-            latest_doc = db.query(CaseDocument).filter(
-                CaseDocument.case_id == case.id
-            ).order_by(CaseDocument.uploaded_at.desc()).first()
-
-            # Get next deadline
-            next_deadline = db.query(CaseDeadline).filter(
-                CaseDeadline.case_id == case.id,
-                CaseDeadline.is_completed == False,
-                CaseDeadline.deadline_date > datetime.now(timezone.utc),
-            ).order_by(CaseDeadline.deadline_date).first()
-
-            # Get document count
-            doc_count = db.query(CaseDocument).filter(
-                CaseDocument.case_id == case.id
-            ).count()
-
-            summaries.append({
-                "id": case.id,
-                "case_number": case.case_number,
-                "title": case.title or case.case_number,
-                "case_type": case.case_type,
-                "jurisdiction": case.jurisdiction,
-                "status": case.status.value,
-                "created_at": case.created_at.isoformat(),
-                "latest_document_type": latest_doc.document_type.value if latest_doc else None,
-                "latest_document_date": latest_doc.uploaded_at.isoformat() if latest_doc else None,
-                "next_deadline_date": next_deadline.deadline_date.isoformat() if next_deadline else None,
-                "next_deadline_type": next_deadline.deadline_type if next_deadline else None,
-                "days_until_deadline": next_deadline.days_until_deadline() if next_deadline else None,
-                "document_count": doc_count,
-            })
-
-        return summaries
-
+        return get_user_cases_summary_service(db, user_id, include_closed=include_closed)
     except Exception as e:
         logger.error(f"Error getting user cases summary: {str(e)}")
         return []
@@ -215,93 +189,9 @@ def get_user_cases_summary(user_id: int, include_closed: bool = True) -> List[Di
 
 
 def get_case_detail(user_id: int, case_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Get detailed information about a specific case.
-    """
     db = SessionLocal()
     try:
-        case = get_case_by_id(db, case_id)
-
-        if not case or case.user_id != user_id:
-            return None
-
-        # Get all documents
-        documents = get_case_documents(db, case_id)
-        docs_list = [
-            {
-                "id": doc.id,
-                "document_type": doc.document_type.value,
-                "uploaded_at": doc.uploaded_at.isoformat(),
-                "summary": doc.summary,
-                "has_remedies": bool(doc.remedies),
-            }
-            for doc in documents
-        ]
-
-        # Get attachments
-        attachments = get_attachments_for_case(db, case_id)
-        attachments_list = [
-            {
-                "id": a.id,
-                "original_filename": a.original_filename,
-                "uploaded_at": a.uploaded_at.isoformat(),
-                "size_bytes": a.size_bytes,
-                "content_type": a.content_type,
-            }
-            for a in attachments
-        ]
-
-        # Get timeline
-        timeline = get_case_timeline(db, case_id)
-        timeline_list = [
-            {
-                "id": event.id,
-                "event_type": event.event_type,
-                "event_date": event.event_date.isoformat(),
-                "description": event.description,
-                "metadata": event.event_metadata,
-            }
-            for event in timeline
-        ]
-
-        # Get deadlines
-        deadlines = db.query(CaseDeadline).filter(
-            CaseDeadline.case_id == case_id
-        ).order_by(CaseDeadline.deadline_date).all()
-
-        deadlines_list = [
-            {
-                "id": d.id,
-                "deadline_type": d.deadline_type,
-                "deadline_date": d.deadline_date.isoformat(),
-                "description": d.description,
-                "is_completed": d.is_completed,
-                "days_until": d.days_until_deadline(),
-            }
-            for d in deadlines
-        ]
-
-        # Get latest remedies from most recent document
-        latest_doc = documents[-1] if documents else None
-        remedies = latest_doc.remedies if latest_doc else None
-
-        return {
-            "case": {
-                "id": case.id,
-                "case_number": case.case_number,
-                "title": case.title,
-                "case_type": case.case_type,
-                "jurisdiction": case.jurisdiction,
-                "status": case.status.value,
-                "created_at": case.created_at.isoformat(),
-            },
-            "documents": docs_list,
-            "timeline": timeline_list,
-            "deadlines": deadlines_list,
-            "remedies": remedies,
-            "attachments": attachments_list,
-        }
-
+        return get_case_detail_service(db, user_id, case_id)
     except Exception as e:
         logger.error(f"Error getting case detail: {str(e)}")
         return None
@@ -346,7 +236,7 @@ def upload_case_document(
         )
 
         # Create timeline event
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=case_id,
             event_type="document_uploaded",
@@ -405,7 +295,7 @@ def upload_case_attachment(
         )
 
         # Timeline event
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=case_id,
             event_type="attachment_uploaded",
@@ -430,72 +320,11 @@ def upload_case_attachment(
 
 
 def _extract_days_from_text(text: str) -> Optional[int]:
-    """
-    Extract the number of days from a natural language string.
-    
-    This function uses multiple regex patterns to handle various formats:
-    - "30 days" (standard format)
-    - "appeal within 15 days" (with prefix)
-    - "file appeal in 7 days" (with prefix)
-    - "30days" (no space)
-    - "30 Days" (capitalized)
-    
-    Args:
-        text: The text containing the days information
-        
-    Returns:
-        The extracted number of days, or None if not found
-        
-    Examples:
-        >>> _extract_days_from_text("30 days")
-        30
-        >>> _extract_days_from_text("appeal within 15 days")
-        15
-        >>> _extract_days_from_text("Cost is 500 Rs, appeal in 30 days")
-        30
-        >>> _extract_days_from_text("Invalid text")
-        None
-    """
-    if not text or not isinstance(text, str):
-        return None
-    
-    text = text.strip()
-    
-    if text.isdigit():
-        return int(text)
-        
-    # Primary pattern: digits followed by "day" or "days" (with optional space)
-    # This is the most reliable pattern for our use case
-    primary_match = re.search(r'(\d+)\s*days?\b', text, re.IGNORECASE)
-    if primary_match:
-        return int(primary_match.group(1))
-    
-    # Fallback pattern: digits that appear near "day" keywords
-    # This handles cases like "in 30 days" or "within 15 days"
-    fallback_match = re.search(r'(?:in|within|after)\s+(\d+)\s*days?', text, re.IGNORECASE)
-    if fallback_match:
-        return int(fallback_match.group(1))
-    
-    return None
+    return _extract_days_from_text_service(text)
 
 
 def _validate_days_value(days: int) -> bool:
-    """
-    Validate that the extracted days value is within acceptable bounds.
-    
-    Args:
-        days: The number of days to validate
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    # Define reasonable bounds for appeal deadlines
-    # Minimum: 1 day, Maximum: 365 days (1 year)
-    # These bounds can be adjusted based on business requirements
-    MIN_DAYS = 1
-    MAX_DAYS = 365
-    
-    return MIN_DAYS <= days <= MAX_DAYS
+    return _validate_days_value_service(days)
 
 
 def _auto_create_deadlines_from_remedies(
@@ -506,118 +335,7 @@ def _auto_create_deadlines_from_remedies(
     remedies: Dict,
     document_id: int,
 ):
-    """
-    Auto-create deadlines from remedies advice.
-    
-    This function extracts deadline information from LLM-generated remedies and creates
-    appropriate deadline entries in the database. It includes robust parsing to handle
-    various natural language formats and prevents duplicate deadline creation.
-    
-    Key improvements:
-    - Uses helper functions for precise day extraction
-    - Validates extracted values to prevent invalid deadline dates
-    - Includes comprehensive logging for debugging and audit trails
-    - Handles various natural language formats for days specification
-    """
-    try:
-        # Retrieve appeal_days from remedies dictionary
-        appeal_days = remedies.get("appeal_days")
-        
-        # Skip if no appeal_days information is present
-        if not appeal_days:
-            logger.debug(f"No appeal_days found in remedies for case {case_id}, skipping deadline creation")
-            return
-        
-        # Convert to string for processing
-        appeal_days_str = str(appeal_days).strip()
-        
-        # Extract the number of days using the helper function
-        # This handles various formats like "30 days", "appeal in 15 days", etc.
-        days = _extract_days_from_text(appeal_days_str)
-        
-        if days is None:
-            logger.warning(
-                f"Could not extract days from appeal_days value: '{appeal_days_str}' "
-                f"for case {case_id}. Expected format: '30 days', '15 days', etc."
-            )
-            return
-        
-        # Validate the extracted days value
-        if not _validate_days_value(days):
-            logger.warning(
-                f"Invalid appeal_days value ({days}) for case {case_id}. "
-                f"Value must be between 1 and 365 days."
-            )
-            return
-        
-        # Calculate the deadline date as a timezone-aware UTC datetime.
-        current_time = datetime.now(timezone.utc)
-        deadline_date = current_time + timedelta(days=days)
-
-        # Check for existing pending deadlines to prevent duplicates.
-        # Both sides of the comparison use timezone-aware datetimes so the
-        # ORM filter is consistent across SQLite and PostgreSQL.
-        # A ±1 day tolerance handles minor variations from different processing times.
-        existing_deadline = db.query(CaseDeadline).filter(
-            CaseDeadline.case_id == case_id,
-            CaseDeadline.deadline_type == "appeal",
-            CaseDeadline.is_completed == False,
-            CaseDeadline.deadline_date >= deadline_date - timedelta(days=1),
-            CaseDeadline.deadline_date <= deadline_date + timedelta(days=1)
-        ).first()
-        
-        if existing_deadline:
-            logger.info(
-                f"Skipped duplicate appeal deadline for case {case_id}. "
-                f"Existing deadline ID: {existing_deadline.id}, "
-                f"Date: {existing_deadline.deadline_date.strftime('%Y-%m-%d')}"
-            )
-            return
-        
-        # Create the new deadline entry
-        deadline = CaseDeadline(
-            user_id=user_id,
-            case_id=case_id,
-            case_title=case_title,
-            deadline_date=deadline_date,
-            deadline_type="appeal",
-            description=f"Appeal deadline - {remedies.get('appeal_court', 'Unknown court')}",
-        )
-        db.add(deadline)
-        db.flush()  # Flush to generate deadline.id before using it
-        
-        # Create a timeline event to document the automatic deadline creation
-        create_timeline_event(
-            db=db,
-            case_id=case_id,
-            event_type="deadline_created",
-            description=f"Appeal deadline set for {deadline_date.strftime('%d %B %Y')} based on document analysis",
-            metadata={
-                "deadline_id": deadline.id,
-                "document_id": document_id,
-                "source_days": days,
-                "original_text": appeal_days_str,
-            },
-        )
-        
-        logger.info(
-            f"Auto-created appeal deadline for case {case_id}: "
-            f"{deadline_date.strftime('%Y-%m-%d')} ({days} days from now). "
-            f"Source: document {document_id}"
-        )
-        # Do not commit here — transaction boundaries are owned by the calling
-        # function (upload_case_document).  All writes are staged via flush()
-        # and will be committed atomically by the parent workflow.
-
-    except Exception as e:
-        # Log the full error with context for debugging and re-raise so the
-        # parent session owner can decide whether to rollback.
-        logger.error(
-            f"Error auto-creating deadlines for case {case_id}: {str(e)}. "
-            f"Remedies: {remedies}. Document ID: {document_id}",
-            exc_info=True  # Include full traceback for debugging
-        )
-        raise
+    return _auto_create_deadlines_from_remedies_service(db, user_id, case_id, case_title, remedies, document_id)
 
 
 def get_document_content(document_id: int) -> Optional[str]:
@@ -637,22 +355,11 @@ def get_case_timeline_events(user_id: int, case_id: int) -> List[Dict[str, Any]]
     """Get timeline events for a case"""
     db = SessionLocal()
     try:
-        # Verify ownership
         case = get_case_by_id(db, case_id)
         if not case or case.user_id != user_id:
             return []
 
-        events = get_case_timeline(db, case_id)
-        return [
-            {
-                "id": e.id,
-                "event_type": e.event_type,
-                "event_date": e.event_date.isoformat(),
-                "description": e.description,
-                "metadata": e.event_metadata,
-            }
-            for e in events
-        ]
+        return _timeline_service.get_case_timeline_events(db, case_id)
 
     finally:
         db.close()
@@ -674,66 +381,7 @@ def get_case_full_timeline(user_id: int, case_id: int) -> List[Dict[str, Any]]:
         if not case or case.user_id != user_id:
             return []
 
-        # Batch fetch related items
-        timelines = db.query(CaseTimeline).filter(CaseTimeline.case_id == case_id).all()
-        documents = db.query(CaseDocument).filter(CaseDocument.case_id == case_id).all()
-        deadlines = db.query(CaseDeadline).filter(CaseDeadline.case_id == case_id).all()
-
-        notifications = []
-        if deadlines:
-            deadline_ids = [d.id for d in deadlines]
-            NotificationLog = __import__("database").NotificationLog
-            notifications = db.query(NotificationLog).filter(NotificationLog.deadline_id.in_(deadline_ids)).all()
-
-        items: List[Dict[str, Any]] = []
-
-        for t in timelines:
-            item = {
-                "type": t.event_type,
-                "timestamp": t.event_date.isoformat(),
-                "description": t.description,
-                "metadata": t.event_metadata or {},
-                "source": "timeline",
-            }
-            # If a timeline event represents a reminder and includes a preview, expose it
-            if t.event_type == "reminder" and t.event_metadata and isinstance(t.event_metadata, dict):
-                mp = t.event_metadata.get("message_preview") or t.event_metadata.get("message")
-                if mp:
-                    item["message_preview"] = mp
-            items.append(item)
-
-        for d in documents:
-            items.append({
-                "type": "document_uploaded",
-                "timestamp": d.uploaded_at.isoformat(),
-                "description": f"{d.document_type.value} uploaded",
-                "metadata": {"document_id": d.id},
-                "source": "document",
-            })
-
-        for d in deadlines:
-            ts = d.created_at.isoformat() if d.created_at else (d.deadline_date.isoformat() if d.deadline_date else "")
-            items.append({
-                "type": "deadline_created",
-                "timestamp": ts,
-                "description": f"{d.deadline_type} - {d.description or ''}",
-                "metadata": {"deadline_id": d.id},
-                "source": "deadline",
-            })
-
-        for n in notifications:
-            items.append({
-                "type": "reminder",
-                "timestamp": n.created_at.isoformat() if n.created_at else "",
-                "description": f"Reminder ({n.channel.value}) to {n.recipient} - {n.status.value}",
-                "metadata": {"notification_id": n.id, "deadline_id": n.deadline_id, "days_before": n.days_before},
-                "message_preview": n.message_preview,
-                "source": "notification",
-            })
-
-        # Sort descending by timestamp
-        items_sorted = sorted(items, key=lambda x: x.get("timestamp") or "", reverse=True)
-        return items_sorted
+        return _timeline_service.get_case_full_timeline(db, case_id)
     finally:
         db.close()
 
@@ -754,7 +402,7 @@ def mark_deadline_completed(user_id: int, deadline_id: int) -> bool:
         db.commit()
 
         # Create timeline event
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=deadline.case_id,
             event_type="deadline_completed",
@@ -831,7 +479,7 @@ def add_manual_deadline(
         db.refresh(deadline)
 
         # Create timeline event
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=case_id,
             event_type="deadline_created",
@@ -880,7 +528,7 @@ def _update_case_status(user_id: int, case_id: int, status: CaseStatus) -> bool:
         update_case_status(db, case_id, status)
 
         # Create timeline event
-        create_timeline_event(
+        _timeline_service.create_event(
             db=db,
             case_id=case_id,
             event_type="status_changed",
@@ -902,72 +550,9 @@ def _update_case_status(user_id: int, case_id: int, status: CaseStatus) -> bool:
 
 
 def generate_case_summary_text(user_id: int, case_id: int) -> Optional[str]:
-    """
-    Generate a text summary of a case for export.
-    """
     db = SessionLocal()
     try:
-        case = get_case_by_id(db, case_id)
-        if not case or case.user_id != user_id:
-            return None
-
-        documents = get_case_documents(db, case_id)
-        timeline = get_case_timeline(db, case_id)
-        deadlines = db.query(CaseDeadline).filter(
-            CaseDeadline.case_id == case_id
-        ).order_by(CaseDeadline.deadline_date).all()
-
-        lines = [
-            "=" * 60,
-            f"CASE SUMMARY: {case.case_number}",
-            "=" * 60,
-            "",
-            f"Title: {case.title or 'N/A'}",
-            f"Type: {case.case_type}",
-            f"Jurisdiction: {case.jurisdiction}",
-            f"Status: {case.status.value}",
-            f"Created: {case.created_at.strftime('%d %B %Y')}",
-            "",
-            "-" * 60,
-            "DOCUMENTS",
-            "-" * 60,
-        ]
-
-        for doc in documents:
-            lines.append(f"\n[{doc.document_type.value}] - {doc.uploaded_at.strftime('%d %B %Y')}")
-            if doc.summary:
-                lines.append(f"Summary: {doc.summary}")
-
-        lines.extend([
-            "",
-            "-" * 60,
-            "TIMELINE",
-            "-" * 60,
-        ])
-
-        for event in timeline:
-            lines.append(f"[{event.event_date.strftime('%d %B %Y')}] {event.event_type}: {event.description}")
-
-        lines.extend([
-            "",
-            "-" * 60,
-            "DEADLINES",
-            "-" * 60,
-        ])
-
-        for d in deadlines:
-            status = "✓" if d.is_completed else "○"
-            lines.append(f"[{status}] {d.deadline_type}: {d.deadline_date.strftime('%d %B %Y')} - {d.description or 'No description'}")
-
-        lines.extend([
-            "",
-            "=" * 60,
-            f"Generated: {datetime.now(timezone.utc).strftime('%d %B %Y %H:%M')}",
-            "=" * 60,
-        ])
-
-        return "\n".join(lines)
-
+        return generate_case_summary_text_service(db, user_id, case_id)
     except Exception as e:
         logger.error(f"Error generating case summary: {str(e)}")
         return None
@@ -976,100 +561,19 @@ def generate_case_summary_text(user_id: int, case_id: int) -> Optional[str]:
 
 
 def _get_case_anonymization_secret() -> str:
-    """Return secret used to generate anonymized case IDs.
-
-    Primary source: CASE_ANONYMIZATION_SECRET env var.
-    Fallback: contents of .jwt_secret (kept for local dev compatibility).
-
-    Raises RuntimeError if no non-empty secret can be resolved.  An empty
-    HMAC key produces deterministic, predictable outputs that undermine
-    anonymization guarantees, so we fail loudly rather than silently
-    degrading security.
-    """
-    secret = os.getenv("CASE_ANONYMIZATION_SECRET", "").strip()
-    if secret:
-        return secret
-
-    # Fallback to repo-local .jwt_secret (best-effort; avoids breaking existing deployments).
-    jwt_secret_path = Path(__file__).resolve().parents[0] / ".jwt_secret"
-    if not jwt_secret_path.exists():
-        # Also try one directory up (in case file layout differs)
-        jwt_secret_path = Path(__file__).resolve().parents[1] / ".jwt_secret"
-
-    if jwt_secret_path.exists():
-        try:
-            file_secret = jwt_secret_path.read_text(encoding="utf-8").strip()
-            if file_secret:
-                return file_secret
-        except Exception:
-            pass
-
-    raise RuntimeError(
-        "CASE_ANONYMIZATION_SECRET is not configured. "
-        "Set the 'CASE_ANONYMIZATION_SECRET' environment variable to a strong, "
-        "randomly generated value. Using an empty HMAC key produces predictable "
-        "identifiers and must not be allowed."
-    )
+    return _get_case_anonymization_secret_service()
 
 
 def _generate_anonymized_case_id(case_id: int, created_at: Any) -> str:
-    created_at_str = getattr(created_at, "isoformat", None)
-    created_at_str = created_at.isoformat() if callable(created_at_str) else str(created_at)
-    secret = _get_case_anonymization_secret().encode("utf-8")
-    msg = f"{case_id}-{created_at_str}".encode("utf-8")
-
-    digest = hmac.new(secret, msg, hashlib.sha256).hexdigest()
-    return digest[:12]
+    return _generate_anonymized_case_id_service(case_id, created_at)
 
 
 def generate_anonymized_case_data(case_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Generate anonymized case data for sharing.
-    Removes personal identifiers, hashes case ID.
-    """
-    db = SessionLocal()
-
     try:
-        case = get_case_by_id(db, case_id)
-        if not case:
-            return None
-
-        documents = get_case_documents(db, case_id)
-        timeline = get_case_timeline(db, case_id)
-
-        # Generate secret-based anonymized ID for anonymity
-        anonymized_id = _generate_anonymized_case_id(case_id=case_id, created_at=case.created_at)
-
-
-        return {
-            "anonymized_id": anonymized_id,
-            "case_type": case.case_type,
-            "jurisdiction": case.jurisdiction,
-            "status": case.status.value,
-            "document_count": len(documents),
-            "documents": [
-                {
-                    "type": doc.document_type.value,
-                    "summary": doc.summary,
-                    "remedies": doc.remedies,
-                }
-                for doc in documents
-            ],
-            "timeline": [
-                {
-                    "event_type": e.event_type,
-                    "description": e.description,
-                }
-                for e in timeline
-            ],
-            "created_date": case.created_at.strftime("%B %Y"),
-        }
-
+        return generate_anonymized_case_data_service(case_id)
     except Exception as e:
         logger.error(f"Error generating anonymized data: {str(e)}")
         return None
-    finally:
-        db.close()
 
 
 # =============================================================================

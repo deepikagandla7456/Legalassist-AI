@@ -44,3 +44,20 @@ class OTPVerification(Base):
         if locked_until.tzinfo is None:
             locked_until = locked_until.replace(tzinfo=dt.timezone.utc)
         return now < locked_until
+
+
+class APIKey(Base):
+    """Database model for API keys."""
+    __tablename__ = "api_keys"
+    id = Column(Integer, primary_key=True)
+    key_id = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    key_hash = Column(String(64), nullable=False)
+    key_salt = Column(String(32), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    def is_valid(self) -> bool:
+        if self.expires_at and dt.datetime.now(dt.timezone.utc) > self.expires_at:
+            return False
+        return True

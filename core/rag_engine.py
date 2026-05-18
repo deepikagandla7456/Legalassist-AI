@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 from typing import Dict, List, Optional
@@ -8,6 +9,14 @@ from langchain_community.vectorstores import Chroma
 from config import Config
 
 LOGGER = logging.getLogger(__name__)
+
+
+def get_judgment_hash(text: str) -> str:
+    """Generate an MD5 hash of judgment text to uniquely identify it."""
+    if not text:
+        return ""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
 
 class LegalRAG:
     def __init__(self, embedding_model_name: str = "all-MiniLM-L6-v2"):
@@ -30,6 +39,11 @@ class LegalRAG:
             separators=["\n\n", "\n", ".", " ", ""]
         )
 
+    def reset(self) -> None:
+        """Reset the vector store to clear loaded document state."""
+        LOGGER.info("Resetting LegalRAG vector store.")
+        self.vector_store = None
+
     def _is_section_header(self, line: str) -> bool:
         """Identify likely legal section headers so related rules stay together."""
         stripped_line = line.strip()
@@ -42,6 +56,8 @@ class LegalRAG:
         """Split judgment text on section-like headers before falling back to size-based chunking."""
         chunks: List[str] = []
         current_section_lines: List[str] = []
+        max_chunk_size = 1800
+        max_hard_slice_size = 2000
 
         for line in text.splitlines():
             if self._is_section_header(line) and current_section_lines:
@@ -63,10 +79,18 @@ class LegalRAG:
 
         semantic_chunks: List[str] = []
         for chunk in chunks:
-            if len(chunk) <= 1800:
+            if len(chunk) <= max_chunk_size:
                 semantic_chunks.append(chunk)
             else:
-                semantic_chunks.extend(self.text_splitter.split_text(chunk))
+                split_result = self.text_splitter.split_text(chunk)
+                for sub_chunk in split_result:
+                    if len(sub_chunk) <= max_chunk_size:
+                        semantic_chunks.append(sub_chunk)
+                    else:
+                        for i in range(0, len(sub_chunk), max_hard_slice_size):
+                            hard_slice = sub_chunk[i:i + max_hard_slice_size]
+                            if hard_slice.strip():
+                                semantic_chunks.append(hard_slice)
 
         return [chunk for chunk in semantic_chunks if chunk.strip()]
 
