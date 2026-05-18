@@ -12,13 +12,39 @@ from sqlalchemy.orm import Session
 
 from db.session import SessionLocal
 from db.models import Case, CaseDocument, CaseTimeline
+from config import Config
+
+# Minimum secret length required for anonymization secret
+_MIN_SECRET_LENGTH = 32
 
 
-def _get_case_anonymization_secret() -> str:
-    secret = os.getenv("CASE_ANONYMIZATION_SECRET", "").strip()
-    if secret:
+def _get_case_anonymization_secret(override: Optional[str] = None) -> str:
+    """
+    Resolve the anonymization secret.
+
+    Rules:
+    - If `override` is provided it may only be used in test mode (`Config.TESTING` True).
+    - Prefer `CASE_ANONYMIZATION_SECRET` environment/secret.
+    - Fallback to project `.jwt_secret` file only in non-production environments.
+    - Enforce minimum secret length.
+    """
+    # Test-time override support
+    if override is not None:
+        if not Config.TESTING:
+            raise RuntimeError("Secret override allowed only in testing mode")
+        secret = str(override or "").strip()
+        if len(secret) < _MIN_SECRET_LENGTH:
+            raise ValueError(f"Anonymization secret must be at least {_MIN_SECRET_LENGTH} characters")
         return secret
 
+    # Primary source: environment / streamlit secrets
+    secret = os.getenv("CASE_ANONYMIZATION_SECRET", "").strip()
+    if secret:
+        if len(secret) < _MIN_SECRET_LENGTH:
+            raise ValueError(f"Anonymization secret from environment must be at least {_MIN_SECRET_LENGTH} characters")
+        return secret
+
+    # Secondary fallback: .jwt_secret file (only allowed in non-production)
     jwt_secret_path = Path(__file__).resolve().parents[1] / ".jwt_secret"
     if not jwt_secret_path.exists():
         jwt_secret_path = Path(__file__).resolve().parents[2] / ".jwt_secret"
@@ -27,6 +53,11 @@ def _get_case_anonymization_secret() -> str:
         try:
             file_secret = jwt_secret_path.read_text(encoding="utf-8").strip()
             if file_secret:
+                if Config.is_production():
+                    # Disallow falling back to file in production for security
+                    raise RuntimeError("Anonymization secret must be provided via CASE_ANONYMIZATION_SECRET in production")
+                if len(file_secret) < _MIN_SECRET_LENGTH:
+                    raise ValueError(f"Anonymization secret from file must be at least {_MIN_SECRET_LENGTH} characters")
                 return file_secret
         except Exception:
             pass
@@ -34,12 +65,25 @@ def _get_case_anonymization_secret() -> str:
     raise RuntimeError("CASE_ANONYMIZATION_SECRET is not configured.")
 
 
-def _generate_anonymized_case_id(case_id: int, created_at: Any) -> str:
+def _generate_anonymized_case_id(case_id: int, created_at: Any, secret_override: Optional[str] = None) -> str:
+    """Generate a deterministic anonymized id for a case.
+
+    Accepts an optional `secret_override` for test determinism (only used when
+    `Config.TESTING` is True). Otherwise resolves secret via `_get_case_anonymization_secret()`.
+    """
     created_at_str = getattr(created_at, "isoformat", None)
     created_at_str = created_at.isoformat() if callable(created_at_str) else str(created_at)
-    secret = _get_case_anonymization_secret().encode("utf-8")
+    if secret_override is not None:
+        if not Config.TESTING:
+            raise RuntimeError("Secret override allowed only in testing mode")
+        if len(str(secret_override or "")) < _MIN_SECRET_LENGTH:
+            raise ValueError(f"Anonymization secret must be at least {_MIN_SECRET_LENGTH} characters")
+        secret_bytes = str(secret_override).encode("utf-8")
+    else:
+        secret_bytes = _get_case_anonymization_secret().encode("utf-8")
+
     msg = f"{case_id}-{created_at_str}".encode("utf-8")
-    digest = hmac.new(secret, msg, hashlib.sha256).hexdigest()
+    digest = hmac.new(secret_bytes, msg, hashlib.sha256).hexdigest()
     return digest[:12]
 
 
