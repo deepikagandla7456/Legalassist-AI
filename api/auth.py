@@ -13,6 +13,7 @@ import hashlib
 
 from api.config import get_settings
 from database import SessionLocal, is_token_revoked
+from db.models import APIKey
 
 
 class AuthError(Exception):
@@ -233,31 +234,45 @@ async def get_current_user(
         
         return CurrentUser(user_id, email, role)
     
-    # Try API Key from header — validate as a signed JWT.
+    # Try API Key from header — look up in database only.
+    # Never treat API keys as JWTs; they are opaque secrets validated by hash.
     if http_auth:
         api_key = http_auth.credentials
+        key_prefix = "key_"
+
+        if not api_key.startswith(key_prefix):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key format"
+            )
+
+        db = SessionLocal()
         try:
-            payload = verify_token(api_key)
-        except (TokenExpiredError, InvalidTokenError):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-        
-        user_id = payload.get("sub")
-        email = payload.get("email", "api@example.com")
-        role = payload.get("role", "user")
+            key_record = db.query(APIKey).filter(
+                APIKey.key_id == api_key
+            ).first()
 
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key payload"
-            )
+            if not key_record:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API key"
+                )
 
-        return CurrentUser(user_id, email, role)
-    
+            if not key_record.is_valid():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="API key has expired"
+                )
+
+            return CurrentUser(
+                user_id=0,
+                email="api_user",
+                role="api"
+            )
+        finally:
+            db.close()
+
     # Try X-API-Key header
-    # This would typically be validated against database
     
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
