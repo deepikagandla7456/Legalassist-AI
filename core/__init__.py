@@ -35,6 +35,20 @@ from .a11y import (
     a11y_skip_link,
 )
 from .i18n import I18n, i18n, init_i18n, _
+from .timezone_utils import (
+    utc_to_local,
+    format_local_timestamp,
+    format_deadline_timestamp,
+    get_user_timezone,
+    get_timezone_offset,
+    render_timezone_selector,
+)
+from .api_client import (
+    APIResponse,
+    call_with_fallback,
+    ResilientClient,
+    with_timeout_fallback,
+)
 
 __all__ = [
     'extract_text_from_pdf',
@@ -72,6 +86,14 @@ __all__ = [
     'i18n',
     'init_i18n',
     '_',
-]
-    'validate_pdf_metadata',
+    'utc_to_local',
+    'format_local_timestamp',
+    'format_deadline_timestamp',
+    'get_user_timezone',
+    'get_timezone_offset',
+    'render_timezone_selector',
+    'APIResponse',
+    'call_with_fallback',
+    'ResilientClient',
+    'with_timeout_fallback',
 ]

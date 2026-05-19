@@ -2,7 +2,7 @@ import streamlit as st
 import logging
 
 from core.app_utils import get_client, RETRO_STYLING
-from core.rag_engine import LegalRAG
+from core.rag_engine import LegalRAG, get_judgment_hash
 import routes
 
 # Apply the same styling as other pages
@@ -10,7 +10,7 @@ st.markdown(RETRO_STYLING, unsafe_allow_html=True)
 
 # Cache the RAG engine so we don't reload the embedding model on every interaction
 @st.cache_resource
-def get_rag_engine():
+def get_rag_engine(text_hash: str):
     return LegalRAG()
 
 def render_page():
@@ -23,6 +23,13 @@ def render_page():
             st.switch_page(routes.PAGE_HOME)
         return
 
+    # Invalidate and reset chat if the judgment document has changed
+    current_hash = get_judgment_hash(st.session_state.judgment_raw_text)
+    if st.session_state.get("last_judgment_hash") != current_hash:
+        st.session_state.chat_history = []
+        st.session_state.rag_initialized = False
+        st.session_state.last_judgment_hash = current_hash
+
     # Sidebar language preference
     language = st.session_state.get("judgment_language", "English")
     st.sidebar.markdown(f"**Chat Language:** {language}")
@@ -30,10 +37,15 @@ def render_page():
     
     if st.sidebar.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.chat_history = []
+        st.session_state.rag_initialized = False
+        # Get cached engine and reset it
+        stale_hash = st.session_state.get("last_judgment_hash", "")
+        rag_engine = get_rag_engine(stale_hash)
+        rag_engine.reset()
         st.rerun()
 
     # Initialize RAG Engine
-    rag_engine = get_rag_engine()
+    rag_engine = get_rag_engine(current_hash)
     
     if "rag_initialized" not in st.session_state or not st.session_state.rag_initialized:
         with st.spinner("Initializing interactive chat... (this may take a moment to process the document)"):

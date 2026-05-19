@@ -795,7 +795,7 @@ class TestRemediesAdvancedScenarios:
         # If the LLM uses Devanagari digits, it might fail, which is a known limitation
         assert remedies["what_happened"] is not None
 
-    @patch("case_manager.create_timeline_event")
+    @patch("case_manager._timeline_service.create_event")
     @freeze_time(FIXED_NOW)
     def test_full_workflow_timeline_linkage(self, mock_create_event, mock_db_session):
         """Verify that creating a deadline also triggers a timeline event with correct metadata"""
