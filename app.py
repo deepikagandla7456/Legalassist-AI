@@ -33,9 +33,9 @@ from core.app_utils import (
     export_draft_to_pdf,
 )
 
-# ==================== Notification System Setup ====================
-from database import init_db, SessionLocal, get_db, DocumentType, db_session
-from scheduler import start_scheduler
+# ==================== Notification System ====================
+# NOTE: Use scheduler.run_worker() for production deployments.
+# Do NOT start scheduler in Streamlit - it causes failures on reruns.
 from auth import init_auth_session, require_auth, get_current_user_id, get_current_user_email, logout_user
 from case_manager import get_user_cases_summary, upload_case_document, create_new_case, get_case_detail
 import routes
