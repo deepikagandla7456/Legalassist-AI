@@ -8,7 +8,7 @@ from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from db.models import CaseDeadline
+from db.models import CaseDeadline, CaseTimeline
 from .timeline_service import timeline_service
 
 
@@ -46,6 +46,22 @@ def _validate_days_value(days: int) -> bool:
     return 1 <= days <= 365
 
 
+def _has_matching_deadline_creation(db: Session, case_id: int, days: int, document_id: int) -> bool:
+    events = db.query(CaseTimeline).filter(
+        CaseTimeline.case_id == case_id,
+        CaseTimeline.event_type == "deadline_created",
+    ).all()
+
+    for event in events:
+        metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+        if metadata.get("source_days") == days:
+            return True
+        if document_id is not None and metadata.get("document_id") == document_id:
+            return True
+
+    return False
+
+
 def auto_create_deadlines_from_remedies(
     db: Session,
     user_id: int,
@@ -63,19 +79,11 @@ def auto_create_deadlines_from_remedies(
     if days is None or not _validate_days_value(days):
         return
 
+    if _has_matching_deadline_creation(db, case_id, days, document_id):
+        return
+
     current_time = dt.datetime.now(dt.timezone.utc)
     deadline_date = current_time + dt.timedelta(days=days)
-
-    existing_deadline = db.query(CaseDeadline).filter(
-        CaseDeadline.case_id == case_id,
-        CaseDeadline.deadline_type == "appeal",
-        CaseDeadline.is_completed == False,
-        CaseDeadline.deadline_date >= deadline_date - dt.timedelta(days=1),
-        CaseDeadline.deadline_date <= deadline_date + dt.timedelta(days=1),
-    ).first()
-
-    if existing_deadline:
-        return
 
     deadline = CaseDeadline(
         user_id=user_id,
