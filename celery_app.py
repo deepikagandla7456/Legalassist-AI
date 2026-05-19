@@ -537,7 +537,6 @@ def generate_report_task(
     report_id: str,
     report_type: str = "comprehensive",
     format: str = "pdf",
-    report_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Asynchronous task to generate a formal report for a legal case.
@@ -548,13 +547,9 @@ def generate_report_task(
         report_id (str): Unique report UUID created by API.
         report_type (str): The type of report (e.g., 'summary', 'comprehensive').
         format (str): The output format ('pdf', 'html', etc.).
-        report_id (str, optional): Pre-generated report ID.
-
     Returns:
         Dict[str, Any]: Metadata about the generated report file.
     """
-    report_id = report_id or str(uuid.uuid4())
-
     from db.session import db_session
     from db.models.reports import Report
 

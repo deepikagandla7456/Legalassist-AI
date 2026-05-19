@@ -9,34 +9,31 @@ import pytest
 def test_anonymized_id_changes_with_secret(monkeypatch):
     # Import inside test so monkeypatch can affect env var used during module import.
     monkeypatch.setenv("CASE_ANONYMIZATION_SECRET", "a" * 40)
-    import case_manager  # noqa: E402
 
     created_at = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-    anon_a = case_manager._generate_anonymized_case_id(case_id=123, created_at=created_at)
+    anon_a = ca._generate_anonymized_case_id(case_id=123, created_at=created_at)
 
     monkeypatch.setenv("CASE_ANONYMIZATION_SECRET", "b" * 40)
-    anon_b = case_manager._generate_anonymized_case_id(case_id=123, created_at=created_at)
+    anon_b = ca._generate_anonymized_case_id(case_id=123, created_at=created_at)
 
     assert anon_a != anon_b
 
 
 def test_anonymized_id_deterministic_with_same_secret(monkeypatch):
     monkeypatch.setenv("CASE_ANONYMIZATION_SECRET", "s" * 40)
-    import case_manager  # noqa: E402
 
     created_at = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-    anon_1 = case_manager._generate_anonymized_case_id(case_id=123, created_at=created_at)
-    anon_2 = case_manager._generate_anonymized_case_id(case_id=123, created_at=created_at)
+    anon_1 = ca._generate_anonymized_case_id(case_id=123, created_at=created_at)
+    anon_2 = ca._generate_anonymized_case_id(case_id=123, created_at=created_at)
 
     assert anon_1 == anon_2
 
 
 def test_anonymized_id_format(monkeypatch):
     monkeypatch.setenv("CASE_ANONYMIZATION_SECRET", "f" * 40)
-    import case_manager  # noqa: E402
 
     created_at = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-    anon = case_manager._generate_anonymized_case_id(case_id=123, created_at=created_at)
+    anon = ca._generate_anonymized_case_id(case_id=123, created_at=created_at)
 
     assert len(anon) == 12
     int(anon, 16)  # should be hex
@@ -44,16 +41,14 @@ def test_anonymized_id_format(monkeypatch):
 
 def test_different_inputs_produce_different_ids(monkeypatch):
     monkeypatch.setenv("CASE_ANONYMIZATION_SECRET", "z" * 40)
-    import case_manager  # noqa: E402
-
     from datetime import datetime, timezone
 
     dt1 = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
     dt2 = datetime(2024, 1, 3, 3, 4, 5, tzinfo=timezone.utc)
 
-    id1 = case_manager._generate_anonymized_case_id(case_id=10, created_at=dt1)
-    id2 = case_manager._generate_anonymized_case_id(case_id=11, created_at=dt1)
-    id3 = case_manager._generate_anonymized_case_id(case_id=10, created_at=dt2)
+    id1 = ca._generate_anonymized_case_id(case_id=10, created_at=dt1)
+    id2 = ca._generate_anonymized_case_id(case_id=11, created_at=dt1)
+    id3 = ca._generate_anonymized_case_id(case_id=10, created_at=dt2)
 
     assert id1 != id2
     assert id1 != id3

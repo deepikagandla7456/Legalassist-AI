@@ -52,6 +52,9 @@ def _get_case_anonymization_secret(override: Optional[str] = None) -> str:
     if jwt_secret_path.exists():
         try:
             file_secret = jwt_secret_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            logger.exception("Failed to read anonymization secret from %s", jwt_secret_path)
+        else:
             if file_secret:
                 if Config.is_production():
                     # Disallow falling back to file in production for security
@@ -59,8 +62,6 @@ def _get_case_anonymization_secret(override: Optional[str] = None) -> str:
                 if len(file_secret) < _MIN_SECRET_LENGTH:
                     raise ValueError(f"Anonymization secret from file must be at least {_MIN_SECRET_LENGTH} characters")
                 return file_secret
-        except Exception:
-            pass
 
     raise RuntimeError("CASE_ANONYMIZATION_SECRET is not configured.")
 

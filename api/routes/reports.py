@@ -118,7 +118,6 @@ async def generate_report(
         report_id=report_id,
         report_type=request.report_type,
         format=request.format,
-        report_id=report_id,
     )
 
     # Save job_id to the database record
