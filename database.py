@@ -187,30 +187,8 @@ __all__ = [
 
 
 # ==================== Legacy Helper Functions ====================
-
-
-def get_user_by_email(db: Session, email: str) -> Optional[User]:
-    """Get a user by email address"""
-    return db.query(User).filter(User.email == email).first()
-
-
-def create_user(db: Session, email: str) -> User:
-    """Create a new user"""
-    user = User(email=email)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
-    """Update last login timestamp for a user"""
-    user = db.query(User).filter(User.id == user_id).first()
-    if user:
-        user.last_login = dt.datetime.now(dt.timezone.utc)
-        db.commit()
-        db.refresh(user)
-    return user
+# Note: get_user_by_email, create_user, update_user_last_login are imported
+# from db.otp_service to ensure consistent OTP service behavior
 
 
 _OTP_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
