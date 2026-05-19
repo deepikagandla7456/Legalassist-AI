@@ -101,19 +101,13 @@ def verify_token(token: str) -> Dict:
         if payload is None:
             raise InvalidTokenError(str(last_error) if last_error else "Invalid token")
         if payload.get("type") != "access":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token type",
-            )
+            raise InvalidTokenError("Invalid token type")
 
         jti = payload.get("jti")
         if jti:
             with SessionLocal() as db:
                 if is_token_revoked(db, jti):
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Token has been revoked",
-                    )
+                    raise InvalidTokenError("Token has been revoked")
         return payload
     except jwt.ExpiredSignatureError:
         raise TokenExpiredError("Token has expired")
