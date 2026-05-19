@@ -245,7 +245,7 @@ def main():
         with col1:
             status_filter = st.selectbox(
                 "Filter by Status",
-                ["All", "Active", "Appealed", "Closed", "Pending"],
+                ["All", "Active", "Appealed", "Closed"],
                 key="status_filter",
             )
 
