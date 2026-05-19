@@ -179,3 +179,54 @@ def test_auto_create_deadlines_from_remedies_skips_same_source_days(monkeypatch)
     )
 
     assert mock_db.add.call_count == 0
+
+
+def test_auto_create_deadlines_from_remedies_logs_when_appeal_days_missing(caplog):
+    mock_db = MagicMock()
+
+    with caplog.at_level("WARNING"):
+        deadlines_auto_creator.auto_create_deadlines_from_remedies(
+            db=mock_db,
+            user_id=1,
+            case_id=42,
+            case_title="Boundary Case",
+            remedies={"appeal_court": "High Court"},
+            document_id=99,
+        )
+
+    assert mock_db.add.call_count == 0
+    assert "appeal_days is missing" in caplog.text
+
+
+def test_auto_create_deadlines_from_remedies_logs_when_remedies_payload_invalid(caplog):
+    mock_db = MagicMock()
+
+    with caplog.at_level("WARNING"):
+        deadlines_auto_creator.auto_create_deadlines_from_remedies(
+            db=mock_db,
+            user_id=1,
+            case_id=42,
+            case_title="Boundary Case",
+            remedies='{"appeal_days": "30", "appeal_court": "High Court"}',
+            document_id=99,
+        )
+
+    assert mock_db.add.call_count == 0
+    assert "must be a mapping" in caplog.text
+
+
+def test_auto_create_deadlines_from_remedies_logs_when_appeal_days_type_is_invalid(caplog):
+    mock_db = MagicMock()
+
+    with caplog.at_level("WARNING"):
+        deadlines_auto_creator.auto_create_deadlines_from_remedies(
+            db=mock_db,
+            user_id=1,
+            case_id=42,
+            case_title="Boundary Case",
+            remedies={"appeal_days": ["30"], "appeal_court": "High Court"},
+            document_id=99,
+        )
+
+    assert mock_db.add.call_count == 0
+    assert "invalid remedies payload shape" in caplog.text

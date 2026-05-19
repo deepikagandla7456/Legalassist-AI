@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Union
 
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from db.models import CaseDeadline, CaseTimeline
 from .timeline_service import timeline_service
+
+
+logger = logging.getLogger(__name__)
 
 
 _APPEAL_CONTEXT = r"(?:file(?:\s+an?)?\s+appeal|appeal|notice(?:\s+of)?\s+appeal|challenge(?:\s+an?)?(?:\s+order)?)"
@@ -23,6 +28,39 @@ _APPEAL_DAY_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+
+
+class RemediesPayload(BaseModel):
+    appeal_days: Optional[Union[int, str]] = None
+    appeal_court: Optional[str] = None
+
+
+def _validate_remedies_payload(remedies: Any) -> Optional[RemediesPayload]:
+    if not remedies:
+        return None
+
+    if not isinstance(remedies, dict):
+        logger.warning(
+            "Skipping deadline creation: remedies payload must be a mapping, got %s",
+            type(remedies).__name__,
+        )
+        return None
+
+    try:
+        payload = RemediesPayload.model_validate(remedies)
+    except ValidationError as exc:
+        logger.warning("Skipping deadline creation: invalid remedies payload shape: %s", exc)
+        return None
+
+    if payload.appeal_days is None:
+        logger.warning("Skipping deadline creation: remedies payload exists but appeal_days is missing")
+        return None
+
+    if isinstance(payload.appeal_days, str) and not payload.appeal_days.strip():
+        logger.warning("Skipping deadline creation: remedies payload exists but appeal_days is empty")
+        return None
+
+    return payload
 
 
 def _extract_days_from_text(text: str) -> Optional[int]:
@@ -67,11 +105,15 @@ def auto_create_deadlines_from_remedies(
     user_id: int,
     case_id: int,
     case_title: str,
-    remedies: Dict,
+    remedies: Any,
     document_id: int,
 ) -> None:
-    appeal_days = remedies.get("appeal_days")
-    if not appeal_days:
+    validated_remedies = _validate_remedies_payload(remedies)
+    if validated_remedies is None:
+        return
+
+    appeal_days = validated_remedies.appeal_days
+    if appeal_days is None:
         return
 
     appeal_days_str = str(appeal_days).strip()
@@ -91,7 +133,7 @@ def auto_create_deadlines_from_remedies(
         case_title=case_title,
         deadline_date=deadline_date,
         deadline_type="appeal",
-        description=f"Appeal deadline - {remedies.get('appeal_court', 'Unknown court')}",
+        description=f"Appeal deadline - {validated_remedies.appeal_court or 'Unknown court'}",
     )
     db.add(deadline)
     db.flush()
