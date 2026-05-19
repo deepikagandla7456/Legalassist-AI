@@ -17,8 +17,13 @@ from config import Config
 
 import uuid
 import jwt
-import sendgrid
-from sendgrid.helpers.mail import Mail
+
+try:
+    import sendgrid
+    from sendgrid.helpers.mail import Mail
+except ImportError:
+    sendgrid = None
+    Mail = None
 
 from database import (
     SessionLocal,
@@ -133,14 +138,14 @@ def send_otp_email(email: str, otp: str) -> bool:
         api_key = os.getenv("SENDGRID_API_KEY")
         from_email = os.getenv("SENDGRID_FROM_EMAIL", "noreply@legalassist.ai")
 
-        if not api_key:
+        if not api_key or sendgrid is None:
             if _is_debug_or_testing_mode():
-                logger.warning("SendGrid API key not configured - using masked OTP logging for debug/test mode")
+                logger.warning("SendGrid API key not configured or sendgrid package not installed - using masked OTP logging for debug/test mode")
                 logger.debug(f"OTP for {email}: [MASKED-{otp[:2]}***{otp[-1]}]")
                 return True  # Simulate success only in explicit debug/testing environments
             logger.error(
-                f"SendGrid API key not configured — OTP delivery failed for {email}. "
-                "Set SENDGRID_API_KEY to enable email authentication."
+                f"SendGrid API key not configured or sendgrid package not installed — OTP delivery failed for {email}. "
+                "Set SENDGRID_API_KEY and install requirements-notifications.txt to enable email authentication."
             )
             return False
 
@@ -954,263 +959,7 @@ def require_auth() -> bool:
     # Token invalid/expired - clear state
     clear_auth_session()
     return False
-            # =========================================================================
-            # CRITICAL SECURITY AND STATE MANAGEMENT FIX
-            # =========================================================================
-            # 
-            # 1. OVERVIEW OF STREAMLIT EXECUTION MODEL
-            # ----------------------------------------
-            # Streamlit is built on a unique execution model where the entire Python script
-            # is rerun from top to bottom every time a user interacts with a widget or
-            # when a programmatic state change occurs. Unlike traditional web frameworks
-            # (like Flask, Django, or FastAPI) that map distinct HTTP requests to isolated
-            # controller functions, Streamlit handles UI state interactively within a
-            # continuous, single-script context.
-            # 
-            # When an event triggers a rerun, Streamlit:
-            #   a) Captures the widget interactions.
-            #   b) Updates `st.session_state` based on those interactions.
-            #   c) Starts executing the main script file from line 1.
-            #   d) Dynamically redraws the UI components in the exact order they are called.
-            # 
-            # 2. THE PROBLEM: CORRUPTED STATE UPON FORCED LOGOUT
-            # --------------------------------------------------
-            # In our application, protected pages call `require_auth()` at the very top.
-            # This function is responsible for ensuring that the user has a valid, 
-            # unexpired, and non-revoked JWT token.
-            # 
-            # If the token is found to be invalid (e.g., the user was deleted, the token 
-            # expired, or it was manually revoked via a blacklist), we trigger `logout_user()`.
-            # The `logout_user()` function successfully clears the critical authentication 
-            # variables from `st.session_state` (like `user_id`, `user_token`, etc.).
-            # 
-            # However, merely calling `logout_user()` does NOT implicitly stop the current
-            # top-to-bottom execution of the script. After `require_auth()` returns False,
-            # the execution simply proceeds to the next line of code in the page.
-            # 
-            # If the application developer didn't wrap the entire page in an 
-            # `if require_auth():` block (or if they rely on `require_auth()` to halt
-            # execution on its own), the script will continue rendering the protected content.
-            # 
-            # Because `logout_user()` just cleared the session state, the subsequent code 
-            # is now operating on a "Corrupted State":
-            #   - It expects `st.session_state.user_id` to be an integer, but it's now None.
-            #   - It attempts to fetch user-specific data from the database, leading to errors.
-            #   - It renders UI components that should never be visible to unauthenticated users.
-            # 
-            # This leads to a catastrophic cascade of exceptions (like AttributeError or 
-            # TypeError) visually cluttering the screen with error stack traces, or even 
-            # worse, a brief "flash" of unauthorized content before the UI crashes.
-            # 
-            # 3. SECURITY IMPLICATIONS OF CONTINUED EXECUTION
-            # -----------------------------------------------
-            # The failure to halt execution represents a severe security vulnerability 
-            # known as "Information Disclosure" and "Improper Access Control".
-            # 
-            # Scenario:
-            # - User A logs in and has a valid session.
-            # - User A's token expires at 12:00 PM.
-            # - At 12:01 PM, User A clicks a button to view a sensitive document.
-            # - The app calls `require_auth()`, detects the expired token, and clears the state.
-            # - BUT, execution continues.
-            # - The code attempting to render the document might still have a cached ID
-            #   or might fail open, accidentally displaying sensitive data on the screen
-            #   because the script was not forcibly halted.
-            # 
-            # By enforcing a strict halt, we guarantee a "Fail Secure" posture. If 
-            # authentication fails, no further code in the current execution context 
-            # is permitted to run, completely neutralizing the risk of accidental exposure.
-            # 
-            # 4. THE SOLUTION: IMMEDIATE CONTEXT ABORT VIA ST.SWITCH_PAGE()
-            # -------------------------------------------------------
-            # To fix this architectural flaw, we must explicitly tell Streamlit to abandon
-            # the current execution run immediately after clearing the session state and
-            # navigate directly to the login page.
-            # 
-            # We achieve this by calling `st.switch_page(PAGE_LOGIN)`. 
-            # 
-            # How `st.switch_page()` works under the hood:
-            #   - It raises a special internal navigation exception.
-            #   - This exception is caught by the Streamlit execution engine.
-            #   - The engine completely discards the ongoing render.
-            #   - It immediately starts a fresh execution on the login page.
-            # 
-            # Because `logout_user()` has already mutated the `st.session_state` to remove
-            # the authentication flags, the new run will accurately reflect an unauthenticated
-            # user. Standard routing logic (e.g., redirecting to the login page) will safely
-            # take over, ensuring a seamless, secure, and crash-free user experience.
-            # 
-            # 5. ALTERNATIVE APPROACHES CONSIDERED (AND REJECTED)
-            # ---------------------------------------------------
-            # Approach A: Returning False and relying on the caller.
-            #   - Rejected because it places the burden of security on the developer writing
-            #     the individual page. Developers might forget to check the return value,
-            #     leading to vulnerabilities. Security should be centralized and enforced
-            #     by the auth module itself.
-            # 
-            # Approach B: Using `st.stop()`.
-            #   - `st.stop()` raises a `StopException` which halts execution completely and
-            #     leaves the UI exactly as it was. While secure, this results in a bad user
-            #     experience. The user would be left staring at a frozen page until they
-            #     manually refresh their browser. `st.rerun()` provides the same security 
-            #     guarantees but automatically forces the UI to update to the logged-out state.
-            # 
-            # Approach C: Using a custom redirect.
-            #   - We could call `st.switch_page(PAGE_LOGIN)`. This is a valid option,
-            #     but `st.rerun()` is more flexible. It allows the main `app.py` router to 
-            #     handle the unauthenticated state gracefully, perhaps showing a generic 
-            #     landing page rather than forcefully navigating the user.
-            # 
-            # 6. BEST PRACTICES FOR DEVELOPERS
-            # --------------------------------
-            # Even though `require_auth()` now securely halts execution on invalid tokens,
-            # developers should still adhere to defensive programming principles:
-            #   - Always wrap protected page content in a function and only call it if
-            #     authentication is verified (e.g., via a main app router).
-            #   - Do not rely entirely on `st.session_state.user_id` without checking if
-            #     it exists first. Use `get_current_user_id()` instead, which safely
-            #     handles missing state.
-            #   - Ensure that any background tasks or asynchronous threads spawned by the
-            #     Streamlit app also independently verify the user's token before performing
-            #     sensitive operations.
-            # 
-            # 7. LOGGING AND OBSERVABILITY
-            # ----------------------------
-            # Notice that `verify_jwt_token()` handles its own logging when a token is
-            # found to be expired or invalid. By the time we reach this `else` block,
-            # the security event has already been recorded in the application logs.
-            # This ensures we have a clear audit trail of forced logouts without needing
-            # to duplicate logging logic here.
-            # 
-            # 8. FUTURE ENHANCEMENTS TO CONSIDER
-            # ----------------------------------
-            # In a future iteration, we may want to implement a "Flash Message" system
-            # to notify the user *why* they were suddenly logged out. Currently, the
-            # rerun happens silently, which might confuse users if their token expired
-            # while they were actively typing in a form. 
-            # 
-            # A potential implementation would be:
-            #   `st.session_state.flash_message = "Your session expired. Please log in again."`
-            #   `logout_user()`
-            #   `st.rerun()`
-            # 
-            # The login page could then check for `flash_message` and display an 
-            # `st.warning()` before clearing it.
-            # 
-            # 9. TESTING IMPLICATIONS
-            # -----------------------
-            # When writing unit tests for `require_auth()` using tools like `pytest` and
-            # Streamlit's testing framework (`AppTest`), developers must account for 
-            # `st.rerun()`. A rerun exception will bubble up differently than a standard
-            # return value. Test cases simulating an expired token should explicitly assert
-            # that a rerun was triggered or catch the internal rerun exception if they are
-            # calling the function directly outside the Streamlit execution context.
-            # 
-            # 10. IN-DEPTH LOOK AT TOKEN REVOCATION MECHANICS
-            # -----------------------------------------------
-            # It is crucial to understand the exact mechanics of `logout_user()` in the
-            # context of this forced rerun.
-            # 
-            # When `logout_user()` is executed:
-            #   a) It retrieves the current token from `st.session_state.user_token`.
-            #   b) It decodes the token (ignoring expiration to ensure we can read the `jti`).
-            #   c) It writes a revocation record to the relational database via `revoke_token()`.
-            #   d) It aggressively sets all session state auth flags to None/False.
-            # 
-            # Because we perform a synchronous database write before calling `st.rerun()`,
-            # we achieve a strong consistency guarantee. By the time the next execution 
-            # cycle begins, the database already registers the token as revoked. If an 
-            # attacker manages to intercept the old token and attempts to replay it 
-            # in a parallel request (or in a separate browser window), `verify_jwt_token()` 
-            # will immediately reject it because of the explicit revocation record.
-            # 
-            # 11. STREAMLIT'S SINGLE-THREADED EXECUTION
-            # -----------------------------------------
-            # Streamlit executes each user session on an isolated thread, but the execution
-            # model heavily relies on synchronous control flow. Calling `st.rerun()` is
-            # effectively a `goto top_of_script` instruction.
-            # 
-            # If we did not have this `st.rerun()`, we would have to wrap the entire 
-            # logic of every single Streamlit page inside an `if` block:
-            # 
-            #   ```python
-            #   if require_auth():
-            #       # 500 lines of UI code
-            #   else:
-            #       st.error("Please log in")
-            #   ```
-            # 
-            # While the above pattern is acceptable, it leads to excessive indentation
-            # and violates the "Fail Fast" principle. By embedding the `st.rerun()` 
-            # directly into the auth gatekeeper (`require_auth`), we enable a much cleaner,
-            # linear, and flatter code structure in our page components:
-            # 
-            #   ```python
-            #   require_auth()  # Guaranteed to halt if unauthorized
-            #   # The rest of the code can safely assume the user is authenticated.
-            #   # No further indentation required.
-            #   ```
-            # 
-            # 12. HANDLING EDGE CASES: RAPID CLICKS AND RACE CONDITIONS
-            # ---------------------------------------------------------
-            # One subtle bug this fix prevents is related to rapid user interactions.
-            # If a user clicks multiple buttons in rapid succession right as their
-            # token expires, Streamlit queues those events.
-            # 
-            # Without `st.rerun()`, the first event would trigger `require_auth()`, fail, 
-            # clear the state, and then the script would finish executing (perhaps crashing). 
-            # The second queued event would then execute against the newly cleared state, 
-            # causing further chaos.
-            # 
-            # By raising the rerun exception, we effectively flush the execution pipeline
-            # for the current UI context. The queued events are either discarded or evaluated
-            # against the new, pristine (logged-out) session state, ensuring predictable
-            # and stable application behavior.
-            # 
-            # 13. CROSS-SITE SCRIPTING (XSS) MITIGATION
-            # -----------------------------------------
-            # While Streamlit natively escapes HTML, protecting against XSS is a holistic
-            # endeavor. If state corruption were to occur, and user data was partially 
-            # injected into the DOM while the auth context was invalid, it could create 
-            # narrow windows for exploit payloads.
-            # 
-            # Immediate context abortion drastically reduces the attack surface area.
-            # An attacker cannot rely on the predictable execution of the remainder of 
-            # the script if the token is invalid. The application simply refuses to play
-            # along, acting as a structural firewall.
-            # 
-            # 14. MEMORY MANAGEMENT BENEFITS
-            # ------------------------------
-            # Halting execution early also conserves server resources. Protected routes
-            # often involve heavy data processing, large database queries, or the loading
-            # of machine learning models into memory.
-            # 
-            # If an unauthenticated user triggers a route, letting the script proceed 
-            # would waste CPU cycles and memory. `st.rerun()` short-circuits this waste.
-            # As soon as authentication fails, execution stops, allowing the Python garbage
-            # collector to clean up any temporary objects and returning the thread to the
-            # worker pool much faster.
-            # 
-            # 15. CONCLUSION
-            # --------------
-            # The addition of `st.rerun()` is a profound architectural improvement that
-            # strengthens the robustness, security, and performance of the application. 
-            # It prevents state corruption, mitigates information disclosure risks, 
-            # eliminates unhandled exceptions upon logout, conserves server resources,
-            # and ensures a seamless, deterministic user experience.
-            # =========================================================================
-            #
-            # The following lines perform the actual state cleanup and forced redirect.
-            # Do NOT remove or reorder these lines.
-            # 
-            # Step 1: Securely wipe all PII and authentication flags from the session state.
-            # This includes revoking the current token in the database to prevent replay attacks.
-            logout_user()
-            
-            # Step 2: Move the user to the login page and abandon the current render.
-            st.switch_page(PAGE_LOGIN)
 
-    return False
 
 
 def redirect_to_login():
