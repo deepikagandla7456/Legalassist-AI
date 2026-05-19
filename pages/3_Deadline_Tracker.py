@@ -397,11 +397,13 @@ def main():
 
             for d in pending:
                 deadline_dt = d["deadline_date"]
+                deadline_end = deadline_dt + timedelta(days=1)
                 ics_lines.extend([
                     "BEGIN:VEVENT",
                     f"UID:deadline-{d['id']}@legalassist.ai",
                     f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
                     f"DTSTART;VALUE=DATE:{deadline_dt.strftime('%Y%m%d')}",
+                    f"DTEND;VALUE=DATE:{deadline_end.strftime('%Y%m%d')}",
                     f"SUMMARY:[LegalAssist] {d['deadline_type'].title()} - {d['case_title']}",
                     f"DESCRIPTION:{d.get('description', '')}",
                     "STATUS:CONFIRMED",
