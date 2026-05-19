@@ -121,6 +121,8 @@ def integrate_api_with_core():
             "document_id": document_id,
             "summary_prompt": summary_prompt,
             "remedies": remedies,
+            "remedies_confidence_score": remedies.get("confidence_score", 0.0),
+            "remedies_evidence_spans": remedies.get("evidence_spans", []),
         }
     
     _integration_done = True

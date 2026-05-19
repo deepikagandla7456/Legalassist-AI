@@ -348,7 +348,11 @@ class TestRemediesParsing:
         
         # Should return empty dictionary values gracefully
         assert isinstance(remedies, dict)
-        assert all(isinstance(v, str) for k, v in remedies.items() if not k.startswith("_"))
+        assert all(
+            isinstance(v, str)
+            for k, v in remedies.items()
+            if k not in {"confidence_score", "evidence_spans"} and not k.startswith("_")
+        )
 
 
 # ==================== APPEAL INFO EXTRACTION TESTS ====================

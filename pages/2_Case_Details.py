@@ -470,6 +470,16 @@ def render_remedies_section(remedies: Optional[Dict]):
         st.info("No remedies advice available. Upload a judgment document to get advice.")
         return
 
+    confidence_score = remedies.get("confidence_score")
+    if confidence_score is not None:
+        confidence_label = f"{float(confidence_score) * 100:.0f}%"
+        if float(confidence_score) >= 0.75:
+            st.success(f"Remedies confidence: {confidence_label}")
+        elif float(confidence_score) >= 0.5:
+            st.warning(f"Remedies confidence: {confidence_label}")
+        else:
+            st.error(f"Remedies confidence: {confidence_label}")
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -500,6 +510,17 @@ def render_remedies_section(remedies: Optional[Dict]):
         if remedies.get("deadline"):
             st.markdown("**Important Deadline**")
             st.warning(f"⏰ {remedies['deadline']}")
+
+    evidence_spans = remedies.get("evidence_spans") or []
+    if evidence_spans:
+        with st.expander("Show evidence excerpts"):
+            for span in evidence_spans:
+                field = span.get("field", "unknown field")
+                reason = span.get("snippet_reason", "Evidence extracted from remedies response.")
+                span_text = span.get("span_text", "")
+                st.markdown(f"**{field}**")
+                st.caption(reason)
+                st.write(span_text)
 
 
 def render_case_actions(case: Dict, user_id: int):

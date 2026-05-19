@@ -543,6 +543,8 @@ def analyze_document_task(
             "deadlines": deadlines_list,
             "obligations": [],
             "confidence_score": 0.85 if not remedies_data.get("_is_partial") else 0.6,
+            "remedies_confidence_score": remedies_data.get("confidence_score", 0.0),
+            "remedies_evidence_spans": remedies_data.get("evidence_spans", []),
             "analysis_time_seconds": analysis_time,
             "processed_at": datetime.now(timezone.utc).isoformat()
 

@@ -83,6 +83,8 @@ class DocumentAnalysisSummary(BaseModel):
     deadlines: List[DeadlineItem]
     obligations: List[str]
     confidence_score: float = Field(ge=0.0, le=1.0, description="Model confidence for extraction quality (0.0-1.0)")
+    remedies_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence for remedies extraction (0.0-1.0)")
+    remedies_evidence_spans: List[Dict[str, Any]] = Field(default_factory=list)
     analysis_time_seconds: float
 
 

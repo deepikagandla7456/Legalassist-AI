@@ -710,7 +710,172 @@ def _validate_court_name(value: str) -> str:
     return cleaned
 
 
+def _compute_remedies_confidence_and_evidence(remedies: Dict, response_text: str) -> Dict:
+    """Heuristic confidence scoring for remedies extraction.
+
+    Returns a dict:
+      - confidence_score: float 0..1
+      - evidence_spans: list[{field, span_text, snippet_reason}]
+
+    This is deterministic and does not call external services.
+    """
+
+    text = (response_text or "").strip()
+    lower = text.lower()
+
+    def _score_field_present(field: str, *aliases: str) -> float:
+        v = (remedies.get(field) or "").strip()
+        if not v:
+            for alias in aliases:
+                v = (remedies.get(alias) or "").strip()
+                if v:
+                    break
+        if not v:
+            return 0.0
+        # penalize placeholder-y / unknown-y values
+        if v.lower() in {"unknown", "none", "n/a", "not applicable", "null"}:
+            return 0.1
+        return 1.0
+
+    # Fields we care about for remedies confidence
+    required_fields = [
+        "what_happened",
+        "can_appeal",
+        "appeal_days",
+        "appeal_court",
+        "cost_estimate",
+        "first_action",
+        "deadline",
+    ]
+
+    field_scores = {
+        "what_happened": _score_field_present("what_happened"),
+        "can_appeal": _score_field_present("can_appeal"),
+        "appeal_days": _score_field_present("appeal_days"),
+        "appeal_court": _score_field_present("appeal_court"),
+        "cost_estimate": _score_field_present("cost_estimate", "cost"),
+        "first_action": _score_field_present("first_action"),
+        "deadline": _score_field_present("deadline", "important_deadline"),
+    }
+    present_count = sum(1 for f, s in field_scores.items() if s >= 1.0)
+
+    # Base completeness score
+    completeness = present_count / len(required_fields)
+
+    # Strength adjustments
+    # - can_appeal is especially important
+    can_appeal_s = field_scores.get("can_appeal", 0.0)
+    if can_appeal_s < 1.0:
+        completeness *= 0.7
+
+    # - appeal_days and deadline overlap strongly; boost if both present
+    appeal_days_s = field_scores.get("appeal_days", 0.0)
+    deadline_s = field_scores.get("deadline", 0.0)
+    if appeal_days_s >= 1.0 and deadline_s >= 1.0:
+        completeness = min(1.0, completeness + 0.12)
+
+    # - if response text is very short, reduce confidence
+    length_penalty = 0.0
+    if len(lower) < 80:
+        length_penalty = 0.15
+    if len(lower) < 40:
+        length_penalty = 0.25
+
+    confidence = max(0.0, min(1.0, completeness - length_penalty))
+
+    evidence_spans: List[Dict[str, str]] = []
+
+    def _find_span(patterns: List[str], fallback: str) -> str:
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+            if not m:
+                continue
+            span = m.group(0).strip()
+            if len(span) > 220:
+                span = span[:220].rsplit(" ", 1)[0] + "…"
+            return span
+        return fallback
+
+    # Evidence excerpts based on parsing-related regexes
+    # We include evidence spans even when values are missing; fallback indicates absence.
+    evidence_spans.append({
+        "field": "can_appeal",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*can\s+the\s+loser\s+appeal\??.*",
+            r'"can_appeal"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no explicit appeal answer found]"),
+        "snippet_reason": "Matched the ‘can the loser appeal’ section in the response.",
+    })
+
+    evidence_spans.append({
+        "field": "appeal_days",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*(?:appeal\s+timeline|appeal\s+days?)\s*\n\s*[0-9]{1,3}",
+            r'"appeal_days"\s*:\s*"?\d{1,4}"?(?:,|\n|$)',
+        ], "[no appeal days found]"),
+        "snippet_reason": "Looked for a numeric appeal timeline / days value in the response.",
+    })
+
+    evidence_spans.append({
+        "field": "appeal_court",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*appeal\s+court.*",
+            r'"appeal_court"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no appeal court found]"),
+        "snippet_reason": "Looked for the ‘appeal court’ section content in the response.",
+    })
+
+    evidence_spans.append({
+        "field": "deadline",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*(?:important\s+deadline|important\s+dates?).*",
+            r'"(?:important_deadline|deadline)"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no deadline found]"),
+        "snippet_reason": "Looked for the ‘important deadline’ / ‘important dates’ section content.",
+    })
+
+    evidence_spans.append({
+        "field": "first_action",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*(?:first\s+action|what\s+should\s+they\s+do\s+first).*",
+            r'"first_action"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no first action found]"),
+        "snippet_reason": "Looked for the ‘first action’ section in the response.",
+    })
+
+    evidence_spans.append({
+        "field": "what_happened",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*what\s+happened\??.*",
+            r'"what_happened"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no ‘what happened’ content found]"),
+        "snippet_reason": "Looked for the ‘what happened’ section in the response.",
+    })
+
+    evidence_spans.append({
+        "field": "cost",
+        "span_text": _find_span([
+            r"(?:^|\n)\s*\d{1,2}\s*[\.)\:\-]\s*(?:cost\s+estimate|rough\s+cost|cost).*",
+            r'"(?:cost_estimate|cost)"\s*:\s*"?.+?"?(?:,|\n|$)',
+        ], "[no cost information found]"),
+        "snippet_reason": "Looked for the cost estimate / cost section in the response.",
+    })
+
+    # Remove obviously empty evidence spans (but keep list always present)
+    # We keep placeholders to show rationale excerpts, but can filter if desired.
+    evidence_spans = [
+        s for s in evidence_spans
+        if s.get("span_text") is not None and str(s.get("span_text")).strip() != ""
+    ]
+
+    return {
+        "confidence_score": float(confidence),
+        "evidence_spans": evidence_spans,
+    }
+
+
 def parse_remedies_response(response_text: str) -> Dict:
+
     """
     Extract structured info from LLM response.
     Prioritizes JSON parsing, with a robust fallback to regex-based line parsing.
@@ -733,6 +898,7 @@ def parse_remedies_response(response_text: str) -> Dict:
     if not text:
         remedies["_is_partial"] = True
         remedies["_warning"] = "Empty response"
+        remedies.update(_compute_remedies_confidence_and_evidence(remedies, text))
         return remedies
 
     # --- STEP 1: Try JSON parsing ---
@@ -752,6 +918,7 @@ def parse_remedies_response(response_text: str) -> Dict:
         # Validation: ensure at least some fields are populated
         populated_fields = [v for k, v in remedies.items() if v and not k.startswith("_")]
         if len(populated_fields) >= 4:
+            remedies.update(_compute_remedies_confidence_and_evidence(remedies, text))
             return remedies
         # If JSON was thin, fall through to regex just in case
 
@@ -771,6 +938,7 @@ def parse_remedies_response(response_text: str) -> Dict:
     # If no numbered sections found, return empty dict with partial flag
     if not sections:
         remedies["_is_partial"] = True
+        remedies.update(_compute_remedies_confidence_and_evidence(remedies, text))
         return remedies
     
     # Extract content for each section
@@ -844,6 +1012,8 @@ def parse_remedies_response(response_text: str) -> Dict:
             remedies["first_action"] = _section_content(4)
         if _section_content(5):
             remedies["deadline"] = _section_content(5)
+
+    remedies.update(_compute_remedies_confidence_and_evidence(remedies, text))
 
     return remedies
 

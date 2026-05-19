@@ -139,6 +139,8 @@ async def get_analysis_result(
         deadlines=result.get("deadlines", []),
         obligations=result.get("obligations", []),
         confidence_score=result.get("confidence_score", 0.0),
+        remedies_confidence_score=result.get("remedies_confidence_score"),
+        remedies_evidence_spans=result.get("remedies_evidence_spans", []),
         analysis_time_seconds=result.get("analysis_time_seconds", 0.0)
     )
 
