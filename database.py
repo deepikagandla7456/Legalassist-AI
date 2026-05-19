@@ -386,29 +386,6 @@ def cleanup_expired_otps(db: Session) -> int:
     return deleted
 
 
-def record_otp_failed_attempt(db: Session, otp_id: int, lockout_duration_minutes: int = 15, max_failed_attempts: int = 5) -> bool:
-    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
-    if otp:
-        otp.failed_attempts += 1
-        if otp.failed_attempts >= max_failed_attempts:
-            otp.locked_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=lockout_duration_minutes)
-        db.commit()
-        db.refresh(otp)
-        return True
-    return False
-
-
-def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
-    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
-    if otp:
-        otp.failed_attempts = 0
-        otp.locked_until = None
-        db.commit()
-        db.refresh(otp)
-        return True
-    return False
-
-
 def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken:
     token = RevokedToken(jti=jti, expires_at=expires_at)
     db.add(token)
@@ -971,34 +948,6 @@ def get_similarity_feedback(
         query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
 
     return query.order_by(SimilarityFeedback.created_at.desc()).limit(limit).all()
-
-
-def record_otp_failed_attempt(
-    db: Session,
-    otp_id: int,
-    lockout_duration_minutes: int = 15,
-    max_failed_attempts: int = 5,
-) -> OTPVerification:
-    """Record a failed OTP verification attempt and lock if max reached"""
-    otp_record = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
-    if otp_record:
-        otp_record.failed_attempts += 1
-        if otp_record.failed_attempts >= max_failed_attempts:
-            otp_record.locked_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=lockout_duration_minutes)
-        db.commit()
-        db.refresh(otp_record)
-    return otp_record
-
-
-def reset_otp_failed_attempts(db: Session, otp_id: int) -> OTPVerification:
-    """Reset OTP failed attempts counter and unlock"""
-    otp_record = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
-    if otp_record:
-        otp_record.failed_attempts = 0
-        otp_record.locked_until = None
-        db.commit()
-        db.refresh(otp_record)
-    return otp_record
 
 
 
