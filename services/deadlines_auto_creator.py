@@ -12,13 +12,14 @@ from db.models import CaseDeadline
 from .timeline_service import timeline_service
 
 
+_APPEAL_CONTEXT = r"(?:file(?:\s+an?)?\s+appeal|appeal|notice(?:\s+of)?\s+appeal|challenge(?:\s+an?)?(?:\s+order)?)"
 _APPEAL_DAY_PATTERNS = (
     re.compile(
-        r"\b(?P<context>file(?:\s+an?)?\s+appeal|appeal|notice(?:\s+of)?\s+appeal|challenge(?:\s+an?)?(?:\s+order)?)\b.{0,40}?\b(?P<days>\d{1,3})\s*days?\b",
+        rf"\b(?P<context>{_APPEAL_CONTEXT})\b(?:\W+\w+){{0,8}}?\s*(?:about\s+|approximately\s+)?(?P<days>\d{{1,3}})\s*[,.-]?\s*(?:(?:business|calendar)\s+)?day(?:s)?\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?P<days>\d{1,3})\s*days?\b.{0,40}?\b(?:to\s+)?(?P<context>file(?:\s+an?)?\s+appeal|appeal|notice(?:\s+of)?\s+appeal|challenge(?:\s+an?)?(?:\s+order)?)\b",
+        rf"\b(?P<days>\d{{1,3}})\s*[,.-]?\s*(?:(?:business|calendar)\s+)?day(?:s)?\b\s*(?:to\s+)?(?P<context>{_APPEAL_CONTEXT})\b",
         re.IGNORECASE,
     ),
 )
