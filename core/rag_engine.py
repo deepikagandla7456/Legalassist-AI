@@ -35,8 +35,8 @@ class LegalRAG:
         )
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1400,
-            chunk_overlap=180,
-            separators=["\n\n", "\n", ".", " ", ""]
+            chunk_overlap=200,
+            separators=["\n\n", "\n", ". ", " ", ""]
         )
 
     def reset(self) -> None:
@@ -56,8 +56,8 @@ class LegalRAG:
         """Split judgment text on section-like headers before falling back to size-based chunking."""
         chunks: List[str] = []
         current_section_lines: List[str] = []
-        max_chunk_size = 1800
-        max_hard_slice_size = 2000
+        max_chunk_size = 1400
+        max_hard_slice_size = 1400
 
         for line in text.splitlines():
             if self._is_section_header(line) and current_section_lines:
