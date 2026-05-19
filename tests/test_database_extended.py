@@ -286,6 +286,44 @@ class TestDatabaseExtended:
         index_names_after = {index["name"] for index in inspect(engine).get_indexes(NotificationLog.__tablename__)}
         assert "ix_notification_logs_status" in index_names_after
 
+    def test_update_case_document_success_and_failure(self, test_db):
+        """Test update_case_document database persistence and error fallback rollback"""
+        from database import update_case_document as db_shim_update
+        from db.case_service import update_case_document as service_update
+        
+        user = create_user(test_db, "doc_test@example.com")
+        case = create_case(test_db, user.id, "CASE-DOC-001", "civil", "Delhi")
+        doc = create_case_document(test_db, case.id, DocumentType.JUDGMENT, user.id, "Original Content")
+        
+        # Test success using service_update
+        updated = service_update(
+            test_db, doc.id, document_content="Updated Content By Service", summary="New Summary"
+        )
+        assert updated is not None
+        assert updated.document_content == "Updated Content By Service"
+        assert updated.summary == "New Summary"
+        
+        # Test success using db_shim_update
+        updated_shim = db_shim_update(
+            test_db, doc.id, document_content="Updated Content By Shim", summary="New Shim Summary"
+        )
+        assert updated_shim is not None
+        assert updated_shim.document_content == "Updated Content By Shim"
+        assert updated_shim.summary == "New Shim Summary"
+        
+        # Test rollback on commit failure (by mocking db.commit to raise an exception)
+        original_commit = test_db.commit
+        def mock_commit():
+            raise Exception("Mock DB Commit Error")
+        test_db.commit = mock_commit
+        
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                db_shim_update(test_db, doc.id, document_content="Should Fail")
+            assert "Database write failed" in str(exc_info.value)
+        finally:
+            test_db.commit = original_commit
+
 
 class TestAutoDeadlineDeduplication:
     """Regression tests for duplicate deadline creation (PR #197 fix)."""

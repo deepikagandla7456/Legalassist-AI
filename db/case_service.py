@@ -248,8 +248,12 @@ def update_case_document(
             doc.extraction_method = extraction_method
         if ocr_used is not None:
             doc.ocr_used = ocr_used
-        db.commit()
-        db.refresh(doc)
+        try:
+            db.commit()
+            db.refresh(doc)
+        except Exception as e:
+            db.rollback()
+            raise RuntimeError(f"Database write failed for case document {document_id}: {str(e)}") from e
     return doc
 
 

@@ -164,6 +164,13 @@ class APISettings(BaseSettings):
                 "Cannot start with empty allowed hosts list for security."
             )
     
+    def validate_runtime_security(self) -> None:
+        """Fail fast when production settings are insecure or missing required secrets."""
+        is_prod = self.ENVIRONMENT in ("production", "prod", "live")
+        if is_prod:
+            if not self.JWT_SECRET_KEY or self.JWT_SECRET_KEY == "your-secret-key-change-in-production":
+                raise RuntimeError("JWT_SECRET_KEY must be set to a secure value in production")
+
     class Config:
         env_file = ".env"
         case_sensitive = True

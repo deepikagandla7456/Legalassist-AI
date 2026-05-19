@@ -84,6 +84,8 @@ from db.models import (
     UserPreference,
     UserFeedback,
     SimilarityFeedback,
+    User,
+    RevokedToken,
 )
 from db.notifications_service import create_or_update_user_preference, get_user_deadlines
 from db.otp_service import (
@@ -841,8 +843,12 @@ def update_case_document(
             doc.summary = summary
         if remedies is not None:
             doc.remedies = remedies
-        db.commit()
-        db.refresh(doc)
+        try:
+            db.commit()
+            db.refresh(doc)
+        except Exception as e:
+            db.rollback()
+            raise RuntimeError(f"Database write failed for case document {document_id}: {str(e)}") from e
     return doc
 
 

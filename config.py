@@ -73,6 +73,9 @@ class Config:
     # API Key for OpenRouter. Must be provided for the AI features to work.
     OPENROUTER_API_KEY = _get_val("OPENROUTER_API_KEY", "")
     
+    # API Key for OpenAI.
+    OPENAI_API_KEY = _get_val("OPENAI_API_KEY", "")
+    
     # --- AI Request Performance & Reliability ---
     # The maximum number of tokens allowed for judgment summaries.
     SUMMARY_MAX_TOKENS = _get_int_env("SUMMARY_MAX_TOKENS", 280)
