@@ -47,6 +47,13 @@ def init_db():
     except Exception:
         pass
 
+    if _is_sqlite or _is_postgres:
+        try:
+            import scripts.apply_immutability as imm
+            imm.apply_immutability()
+        except Exception:
+            pass
+
 
 @contextmanager
 def db_session():

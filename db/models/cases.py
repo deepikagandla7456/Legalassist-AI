@@ -119,6 +119,8 @@ class Attachment(Base):
     content_type = Column(String(255), nullable=True)
     size_bytes = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    is_encrypted = Column(Boolean, default=False, nullable=False)
+    wrapped_key = Column(Text, nullable=True)
 
     case = relationship("Case", back_populates="attachments")
     deadline = relationship("CaseDeadline", back_populates="attachments")
