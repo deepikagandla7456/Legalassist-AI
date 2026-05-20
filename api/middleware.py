@@ -6,6 +6,13 @@ import hashlib
 import json
 import time
 from typing import Callable
+from hashlib import sha256
+
+from sqlalchemy.orm import Session
+
+from api.auth import verify_token, verify_api_key
+from database import SessionLocal
+from db.models import APIKey
 
 import structlog
 from fastapi import HTTPException, Request, status
@@ -48,16 +55,67 @@ IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _request_principal(request: Request) -> str:
+    """Derive a safe principal for idempotency keys.
+
+    Priority:
+    1. Verified JWT -> `user:<user_id>`
+    2. Verified API key -> `api_key:<key_id>` (or `user:<user_id>` if linked)
+    3. Fallback anonymous fingerprint -> `anonymous:<sha256(ip|ua)>`
+
+    This function avoids using raw secrets (Authorization header or full
+    api key) directly as principals to prevent cross-user cache replay.
+    """
+    # If another middleware already resolved an authenticated principal, use it
+    existing = getattr(request.state, "principal", None)
+    if existing:
+        return existing
+
+    # 1) Try Authorization Bearer token and validate it
     auth_header = request.headers.get("authorization")
-    if auth_header:
-        return auth_header
-    api_key = request.headers.get("x-api-key")
-    if api_key:
-        return api_key
-    user_id = request.headers.get("x-user-id")
-    if user_id:
-        return user_id
-    return "anonymous"
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(None, 1)[1].strip()
+        try:
+            payload = verify_token(token)
+            if payload:
+                sub = payload.get("sub") or payload.get("user_id")
+                if sub:
+                    principal = f"user:{int(sub)}"
+                    request.state.principal = principal
+                    return principal
+        except Exception:
+            # Treat as unauthenticated if token invalid
+            pass
+
+    # 2) Try X-API-Key header but only store key_id, not secret
+    api_key_hdr = request.headers.get("x-api-key")
+    if api_key_hdr and "." in api_key_hdr:
+        key_id, secret = api_key_hdr.split(".", 1)
+        try:
+            db: Session = SessionLocal()
+            try:
+                key_record = db.query(APIKey).filter(APIKey.key_id == key_id).first()
+                if key_record and key_record.is_valid() and verify_api_key(secret, key_record.key_salt, key_record.key_hash):
+                    # If API key is linked to a user, prefer that user identity
+                    if getattr(key_record, "user_id", None):
+                        principal = f"user:{int(key_record.user_id)}"
+                    else:
+                        principal = f"api_key:{key_id}"
+                    request.state.principal = principal
+                    return principal
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+    # 3) Do not trust X-User-Id header directly. Only use as last resort if present and matches authenticated state (not available here)
+
+    # 4) Fallback anonymous fingerprint using IP + User-Agent
+    ip = request.client.host if request.client is not None else "unknown"
+    ua = request.headers.get("user-agent", "")
+    fp = sha256(f"{ip}|{ua}".encode()).hexdigest()
+    principal = f"anonymous:{fp}"
+    request.state.principal = principal
+    return principal
 
 
 def _idempotency_exempt_path(path: str) -> bool:
