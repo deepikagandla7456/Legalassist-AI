@@ -79,7 +79,7 @@ class S3Storage:
         try:
             self.client.head_object(Bucket=self.bucket, Key=key)
             return True
-        except:
+        except Exception:
             return False
 
 

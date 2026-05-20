@@ -340,7 +340,8 @@ def render_analytics_preview_section():
                             try:
                                 rate_f = float(success_rate) / 100.0
                                 st.progress(rate_f, text=f"Success Rate Intensity")
-                            except: pass
+                            except (ValueError, TypeError):
+                                pass
                             
                     with m3:
                         st.metric("Appeals Filed", summary.get("appeals_filed", 0))

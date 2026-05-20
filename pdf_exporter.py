@@ -159,8 +159,8 @@ class LegalAssistPDF(FPDF):
             logger.warning(f"safe_set_font recovery: {family} {style} failed -> using Helvetica")
             try:
                 self.set_font("Helvetica", "", size)
-            except:
-                pass
+            except Exception:
+                logger.error(f"Failed to set Helvetica font: {e}")
 
     def _clean(self, txt):
         """
