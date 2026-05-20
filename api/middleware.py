@@ -38,6 +38,13 @@ from observability.instrumentation import (
     traced_operation,
 )
 
+try:
+    from db.session import apply_rls_context, clear_rls_context, _is_postgres
+except Exception:
+    apply_rls_context = None
+    clear_rls_context = None
+    _is_postgres = False
+
 settings = get_settings()
 logger = structlog.get_logger(__name__)
 http_idempotency_manager = IdempotencyManager()
@@ -400,9 +407,12 @@ async def logging_middleware(request: Request, call_next: Callable):
     start_time = time.time()
     endpoint = request.url.path
     request_id = getattr(request.state, "request_id", request.headers.get("X-Correlation-Id") or generate_correlation_id())
-    user_id = getattr(request.state, "user_id", request.headers.get("X-User-Id", "anonymous"))
+    user_id_attr = getattr(request.state, "user_id", request.headers.get("X-User-Id", "anonymous"))
 
-    bind_request_context(request_id=request_id, user_id=user_id)
+    bind_request_context(request_id=request_id, user_id=user_id_attr)
+
+    if apply_rls_context and _is_postgres and user_id_attr not in (None, "anonymous", ""):
+        request.state.db_rls_user_id = user_id_attr
 
     response = None
     error_occurred = False
@@ -414,7 +424,7 @@ async def logging_middleware(request: Request, call_next: Callable):
                 "http.method": request.method,
                 "http.target": endpoint,
                 "request.id": request_id,
-                "user.id": user_id,
+                "user.id": user_id_attr,
             },
         ):
             try:
@@ -430,7 +440,7 @@ async def logging_middleware(request: Request, call_next: Callable):
                     status_code=500,
                     duration_ms=round(duration * 1000, 2),
                     request_id=request_id,
-                    user_id=user_id,
+                    user_id=user_id_attr,
                     error=str(exc),
                 )
                 raise
@@ -446,7 +456,7 @@ async def logging_middleware(request: Request, call_next: Callable):
                 status_code=response.status_code,
                 duration_ms=round(process_time * 1000, 2),
                 request_id=request_id,
-                user_id=user_id,
+                user_id=user_id_attr,
             )
             response.headers["X-Process-Time"] = str(process_time)
             response.headers["X-Request-Id"] = request_id
