@@ -333,6 +333,21 @@ celery_app.conf.update(
             "schedule": 21600.0,
             "options": {"queue": "maintenance"},
         },
+        "enforce-retention-policies": {
+            "task": "enforce_retention_policies",
+            "schedule": 86400.0,
+            "options": {"queue": "compliance"},
+        },
+        "enforce-data-anonymization": {
+            "task": "enforce_data_anonymization",
+            "schedule": 86400.0,
+            "options": {"queue": "compliance"},
+        },
+        "purge-expired-data": {
+            "task": "purge_expired_data",
+            "schedule": 604800.0,
+            "options": {"queue": "compliance"},
+        },
     },
 )
 
@@ -1374,3 +1389,125 @@ def cleanup_revoked_tokens(self) -> Dict[str, Any]:
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()
+
+
+@celery_app.task(name="enforce_retention_policies", bind=True, max_retries=3)
+def enforce_retention_policies(self) -> Dict[str, Any]:
+    """
+    Phase 1: Archive cases that have passed their archive window.
+    Logs all actions to the retention audit trail.
+    """
+    from datetime import datetime, timezone
+    from db.retention_models import RetentionRule, RetentionAuditLog, seed_retention_rules
+    from db.retention_service import archive_expired_cases
+
+    logger.info("Executing compliance: enforce_retention_policies (archive phase)")
+
+    with db_session() as db:
+        seed_retention_rules(db)
+
+        rules = db.query(RetentionRule).all()
+        archived_ids, count = archive_expired_cases(db, cutoff_days=730, dry_run=False)
+
+        log = RetentionAuditLog(
+            action="archive",
+            data_category="cases",
+            record_ids=archived_ids,
+            records_affected=count,
+            executed_by="celery:enforce_retention_policies",
+            reason="Retention policy: archive_after_days=730",
+        )
+        db.add(log)
+        db.commit()
+
+        logger.info("enforce_retention_policies_archived", count=count)
+        return {"status": "completed", "archived_count": count, "category": "cases"}
+
+
+@celery_app.task(name="enforce_data_anonymization", bind=True, max_retries=3)
+def enforce_data_anonymization(self) -> Dict[str, Any]:
+    """
+    Phase 2: Anonymize PII on records past the anonymization window.
+    Handles user_feedback, case_timeline, and related PII fields.
+    """
+    from db.retention_models import RetentionAuditLog, seed_retention_rules
+    from db.retention_service import anonymize_expired_records
+    from db.models.feedback import UserFeedback
+    from db.models.analytics import CaseRecord
+
+    logger.info("Executing compliance: enforce_data_anonymization")
+
+    results = {}
+    with db_session() as db:
+        seed_retention_rules(db)
+
+        feedback_pii = {"user_email": "email", "feedback_text": "text"}
+        ids, count = anonymize_expired_records(
+            db, UserFeedback, cutoff_days=365, pii_fields=feedback_pii, dry_run=False
+        )
+        results["user_feedback"] = count
+        log = RetentionAuditLog(
+            action="anonymize",
+            data_category="user_feedback",
+            record_ids=ids,
+            records_affected=count,
+            executed_by="celery:enforce_data_anonymization",
+            reason="Retention policy: anonymize_after_days=365",
+        )
+        db.add(log)
+        db.commit()
+
+        logger.info("enforce_data_anonymization_completed", results=results)
+        return {"status": "completed", "anonymized": results}
+
+
+@celery_app.task(name="purge_expired_data", bind=True, max_retries=3)
+def purge_expired_data(self) -> Dict[str, Any]:
+    """
+    Phase 3: Hard-delete records that have passed the deletion window.
+    Purges expired notifications, OTP tokens, and old attachments.
+    """
+    from db.retention_models import RetentionAuditLog, seed_retention_rules
+    from db.retention_service import (
+        purge_expired_attachments,
+        purge_expired_notifications,
+        purge_expired_otl_tokens,
+    )
+
+    logger.info("Executing compliance: purge_expired_data")
+
+    results = {}
+    with db_session() as db:
+        seed_retention_rules(db)
+
+        ids, count = purge_expired_notifications(db, cutoff_days=365, dry_run=False)
+        results["notifications"] = count
+        log = RetentionAuditLog(
+            action="hard_delete",
+            data_category="notifications",
+            record_ids=ids,
+            records_affected=count,
+            executed_by="celery:purge_expired_data",
+            reason="Retention policy: delete_after_days=365",
+        )
+        db.add(log)
+        db.commit()
+
+        ids, count = purge_expired_attachments(db, cutoff_days=1095, dry_run=False)
+        results["attachments"] = count
+        log = RetentionAuditLog(
+            action="hard_delete",
+            data_category="attachments",
+            record_ids=ids,
+            records_affected=count,
+            executed_by="celery:purge_expired_data",
+            reason="Retention policy: delete_after_days=1095",
+        )
+        db.add(log)
+        db.commit()
+
+        ids, count = purge_expired_otl_tokens(db, cutoff_days=5, dry_run=False)
+        results["otp_tokens"] = count
+
+        logger.info("purge_expired_data_completed", results=results)
+        return {"status": "completed", "purged": results}
