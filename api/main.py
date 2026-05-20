@@ -184,6 +184,11 @@ def create_app() -> FastAPI:
     app.include_router(deadlines.router)
     app.include_router(auth.router)
     app.include_router(case_search.router)  # Case search and precedent matching
+    try:
+        from api.sso import router as sso_router
+        app.include_router(sso_router)
+    except Exception:
+        pass
     app.include_router(knowledge.router)
     app.include_router(audit.router)
     # Model feedback & optimization
