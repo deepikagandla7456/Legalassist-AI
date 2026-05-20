@@ -21,7 +21,8 @@ from api.middleware import (
     add_correlation_id_middleware,
     error_handling_middleware,
     logging_middleware,
-    request_size_limit_middleware
+    request_size_limit_middleware,
+    idempotency_middleware,
 )
 from api.csrf import CSRFProtectionMiddleware
 from api.limiter import cleanup_limiter
@@ -64,7 +65,7 @@ from api.validation import (
 )
 
 # Import routes
-from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search
+from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, knowledge, audit
 from api.auth import get_current_user_optional
 
 settings = get_settings()
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     
     # Add middleware
     app.middleware("http")(request_size_limit_middleware)
+    app.middleware("http")(idempotency_middleware)
     app.middleware("http")(add_correlation_id_middleware)
     app.middleware("http")(logging_middleware)
     app.middleware("http")(error_handling_middleware)
@@ -182,6 +184,8 @@ def create_app() -> FastAPI:
     app.include_router(deadlines.router)
     app.include_router(auth.router)
     app.include_router(case_search.router)  # Case search and precedent matching
+    app.include_router(knowledge.router)
+    app.include_router(audit.router)
     # Model feedback & optimization
     from api.routes import models as models_router
     app.include_router(models_router.router)
@@ -402,6 +406,88 @@ if settings.ENABLE_WEBSOCKET:
         except Exception as e:
             logger.error("WebSocket error", job_id=job_id, error=str(e))
             await websocket.close(code=1011)
+
+    @app.websocket("/ws/cases/{case_id}/timeline")
+    async def websocket_case_timeline_endpoint(
+        websocket: WebSocket,
+        case_id: int,
+        token: str = Query(None),
+    ):
+        """
+        WebSocket endpoint for real-time case timeline updates.
+
+        Requires authentication via token query parameter or Sec-WebSocket-Protocol
+        header using the subprotocol `access_token`.
+        """
+        from services.timeline_realtime import timeline_realtime_bus
+
+        auth_token = token
+        requested_protocols = []
+
+        if "sec-websocket-protocol" in websocket.headers:
+            header_val = websocket.headers["sec-websocket-protocol"]
+            requested_protocols = [p.strip() for p in header_val.split(",")]
+            if "access_token" in requested_protocols:
+                idx = requested_protocols.index("access_token")
+                if idx + 1 < len(requested_protocols):
+                    auth_token = requested_protocols[idx + 1]
+
+        if not auth_token:
+            await websocket.close(code=4001, reason="Authentication required")
+            return
+
+        try:
+            from api.auth import verify_token
+            payload = verify_token(auth_token)
+            user_id = payload.get("sub")
+            if not user_id:
+                await websocket.close(code=4003, reason="Invalid token")
+                return
+        except (TokenExpiredError, InvalidTokenError, AuthError):
+            await websocket.close(code=4001, reason="Invalid or expired token")
+            return
+
+        subprotocol = "access_token" if "access_token" in requested_protocols else None
+        await websocket.accept(subprotocol=subprotocol)
+
+        # Security: enforce that authenticated user owns the case
+        # (best-effort: if ownership can't be validated in this layer, we still keep
+        # connection alive but will stop pushing if case is missing)
+        try:
+            from sqlalchemy.orm import Session
+            from database import SessionLocal
+            from db.models import Case as CaseModel
+
+            db: Session = SessionLocal()
+            try:
+                case = db.query(CaseModel).filter(CaseModel.id == case_id).first()
+                if not case or str(case.user_id) != str(user_id):
+                    await websocket.close(code=403, reason="Forbidden: case ownership required")
+                    return
+            finally:
+                db.close()
+        except Exception:
+            await websocket.close(code=1011, reason="Server error")
+            return
+
+        await websocket.send_json({
+            "type": "subscribed",
+            "case_id": case_id,
+        })
+
+        queue = await timeline_realtime_bus.subscribe(case_id)
+        try:
+            while True:
+                raw = await queue.get()
+                # bus publishes json string
+                # send_json expects python object, so deserialize
+                import json
+                payload_obj = json.loads(raw)
+                await websocket.send_json(payload_obj)
+        except Exception:
+            pass
+        finally:
+            await timeline_realtime_bus.unsubscribe(case_id, queue)
 
 
 if __name__ == "__main__":

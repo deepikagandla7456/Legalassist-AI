@@ -85,6 +85,7 @@ from db import (
     get_prefs_by_user_ids,
     UserPreference,
 )
+from db.crud.knowledge import process_due_knowledge_invalidations
 from notifications.reminder_engine import (
     plan_eligible_reminders,
     should_process_threshold,
@@ -106,6 +107,8 @@ _instance_id = str(uuid.uuid4())[:8]
 # Lock configuration
 LOCK_KEY = "legalassist:scheduler:lock"
 LOCK_TTL_SECONDS = 55 * 60  # 55 minutes to allow hourly job to complete
+KNOWLEDGE_LOCK_KEY = "legalassist:knowledge:lock"
+KNOWLEDGE_LOCK_TTL_SECONDS = 10 * 60
 
 
 def _get_redis_client():
@@ -307,6 +310,27 @@ def check_and_send_reminders():
             db.close()
 
 
+def recompute_due_knowledge_invalidations():
+    """Recompute stale knowledge artifacts after invalidations become due."""
+
+    lock_id = f"{_instance_id}:{os.getpid()}"
+    with distributed_lock(KNOWLEDGE_LOCK_KEY, KNOWLEDGE_LOCK_TTL_SECONDS, lock_id) as has_lock:
+        if not has_lock:
+            logger.debug("Skipping knowledge recompute - another instance holds the lock")
+            return
+
+        init_db()
+
+        db = SessionLocal()
+        try:
+            processed = process_due_knowledge_invalidations(db)
+            logger.info("Knowledge recompute job completed", processed=len(processed))
+        except Exception as exc:
+            logger.error(f"Error in knowledge recompute job: {exc}", exc_info=True)
+        finally:
+            db.close()
+
+
 def setup_scheduler(scheduler_class):
     """
     ============================================================================
@@ -400,6 +424,14 @@ def setup_scheduler(scheduler_class):
             name="Hourly Deadline Reminder Check",
             replace_existing=True
         )
+
+        scheduler.add_job(
+            recompute_due_knowledge_invalidations,
+            trigger=CronTrigger(minute="*/15", second=10),
+            id="knowledge_recompute_job",
+            name="Quarter-Hour Knowledge Recompute",
+            replace_existing=True,
+        )
         
         logger.info(f"Successfully configured {scheduler_class.__name__}")
         logger.info("Job store: SQLAlchemy (Persistent)")
@@ -454,6 +486,12 @@ def trigger_reminder_check_now():
     """
     logger.info("Manually triggering reminder check...")
     check_and_send_reminders()
+
+
+def trigger_knowledge_recompute_now():
+    """Manually trigger the knowledge recompute job (useful for testing/debugging)."""
+    logger.info("Manually triggering knowledge recompute...")
+    recompute_due_knowledge_invalidations()
 
 
 def run_worker():

@@ -536,6 +536,18 @@ def _validate_court_name(value: Optional[str]) -> Optional[str]:
     # rather than discarding it — trust the LLM output for unknown courts.
     return cleaned
 
+
+def _compute_remedies_quality_metadata(remedies: Dict[str, Any], response_text: str) -> Dict[str, Any]:
+    try:
+        from core.app_utils import _compute_remedies_confidence_and_evidence
+
+        return _compute_remedies_confidence_and_evidence(remedies, response_text)
+    except Exception:
+        return {
+            "confidence_score": 0.0,
+            "evidence_spans": [],
+        }
+
 def parse_remedies_response(response_text: str) -> Dict[str, Any]:
     """
     Analyzes and parses the structured response from the Remedies LLM.
@@ -586,6 +598,7 @@ def parse_remedies_response(response_text: str) -> Dict[str, Any]:
     if not matches:
         LOGGER.warning("parse_remedies_response: no numbered sections found")
         remedies["_is_partial"] = True
+        remedies.update(_compute_remedies_quality_metadata(remedies, text))
         return remedies
 
     parsed_sections = 0
@@ -613,6 +626,7 @@ def parse_remedies_response(response_text: str) -> Dict[str, Any]:
     if parsed_sections == 0:
         LOGGER.warning("parse_remedies_response: no valid sections parsed")
         remedies["_is_partial"] = True
+        remedies.update(_compute_remedies_quality_metadata(remedies, text))
         return remedies
 
     # Normalization & Compatibility
@@ -646,5 +660,7 @@ def parse_remedies_response(response_text: str) -> Dict[str, Any]:
     missing = [f for f in required if not remedies[f]]
     if missing:
         remedies["_is_partial"] = True
+
+    remedies.update(_compute_remedies_quality_metadata(remedies, text))
 
     return remedies

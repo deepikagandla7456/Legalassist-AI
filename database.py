@@ -31,12 +31,16 @@ from db.case_service import (
     get_case_by_number,
     get_case_document_by_id,
     get_case_documents,
+    get_case_note,
+    get_case_note_history,
     get_case_record,
     get_case_timeline,
     get_cases_by_criteria,
     get_user_cases,
     get_user_stats,
+    publish_case_note,
     submit_model_feedback,
+    save_case_note_draft,
     update_case_document,
     update_case_outcome,
     update_case_status,
@@ -49,6 +53,18 @@ from db.crud.notifications import (
     get_upcoming_deadlines,
     has_notification_been_sent,
     log_notification,
+)
+from db.crud.knowledge import (
+    record_knowledge_invalidation,
+    list_knowledge_invalidations,
+    get_knowledge_freshness_summary,
+    process_due_knowledge_invalidations,
+)
+from db.crud.audit import (
+    record_audit_event,
+    list_audit_events,
+    audit_events_to_csv,
+    sanitize_audit_metadata,
 )
 from db.models import (
     Attachment,
@@ -63,8 +79,13 @@ from db.models import (
     CaseRecord,
     CaseStatus,
     CaseTimeline,
+    AuditEvent,
+    CaseNote,
+    CaseNoteVersion,
     DocumentType,
     KnowledgeGraphEdge,
+    KnowledgeInvalidation,
+    KnowledgeInvalidationStatus,
     ModelFeedback,
     ModelPerformance,
     ModelRoutingRule,
@@ -75,6 +96,13 @@ from db.models import (
     OTPVerification,
     PrecedentMatch,
     Report,
+    User,
+    RevokedToken,
+    UserPreference,
+    UserFeedback,
+    SimilarityFeedback,
+    User,
+    RevokedToken,
 )
 from db.notifications_service import create_or_update_user_preference, get_user_deadlines
 from db.otp_service import (
@@ -113,8 +141,11 @@ __all__ = [
     "CaseDeadline",
     "Case",
     "CaseDocument",
+    "CaseNote",
+    "CaseNoteVersion",
     "Attachment",
     "CaseTimeline",
+    "AuditEvent",
     "CaseStatus",
     "DocumentType",
     "User",
@@ -133,6 +164,8 @@ __all__ = [
     "CaseArgument",
     "KnowledgeGraphEdge",
     "PrecedentMatch",
+    "KnowledgeInvalidation",
+    "KnowledgeInvalidationStatus",
     "Report",
     "create_case_deadline",
     "get_upcoming_deadlines",
@@ -168,6 +201,10 @@ __all__ = [
     "create_case_document",
     "get_case_documents",
     "get_case_document_by_id",
+    "get_case_note",
+    "save_case_note_draft",
+    "publish_case_note",
+    "get_case_note_history",
     "update_case_document",
     "create_case_record",
     "get_case_record",
@@ -183,6 +220,14 @@ __all__ = [
     "submit_similarity_feedback",
     "get_similarity_feedback",
     "aggregate_model_performance",
+    "record_knowledge_invalidation",
+    "list_knowledge_invalidations",
+    "get_knowledge_freshness_summary",
+    "process_due_knowledge_invalidations",
+    "record_audit_event",
+    "list_audit_events",
+    "audit_events_to_csv",
+    "sanitize_audit_metadata",
 ]
 
 
@@ -258,10 +303,14 @@ def _reserve_otp_rate_limit_slot(identifier: str, max_requests_per_hour: int, la
 def _safe_reserve_otp_slot(identifier: str, max_requests_per_hour: int, label: str = "identifier") -> int:
     try:
         return _reserve_otp_rate_limit_slot(identifier, max_requests_per_hour, label=label)
-    except TypeError:
+    except TypeError as exc:
+        if exc.__traceback__.tb_next is not None:
+            raise exc
         try:
             return _reserve_otp_rate_limit_slot(identifier, max_requests_per_hour, label)
-        except TypeError:
+        except TypeError as exc_inner:
+            if exc_inner.__traceback__.tb_next is not None:
+                raise exc_inner
             return _reserve_otp_rate_limit_slot(identifier, max_requests_per_hour)
 
 
@@ -789,8 +838,12 @@ def update_case_document(
             doc.summary = summary
         if remedies is not None:
             doc.remedies = remedies
-        db.commit()
-        db.refresh(doc)
+        try:
+            db.commit()
+            db.refresh(doc)
+        except Exception as e:
+            db.rollback()
+            raise RuntimeError(f"Database write failed for case document {document_id}: {str(e)}") from e
     return doc
 
 

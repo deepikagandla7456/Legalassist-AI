@@ -10,6 +10,8 @@ from .models import (
     User,
     OTPVerification,
     Case,
+    CaseNote,
+    CaseNoteVersion,
 )
 
 from .crud.notifications import (
@@ -19,6 +21,12 @@ from .crud.notifications import (
     has_notification_been_sent,
     log_notification,
     get_notification_history,
+)
+from .crud.knowledge import (
+    record_knowledge_invalidation,
+    list_knowledge_invalidations,
+    get_knowledge_freshness_summary,
+    process_due_knowledge_invalidations,
 )
 from .crud.feedback import submit_user_feedback, get_user_feedback
 
@@ -39,6 +47,8 @@ __all__ = [
     "User",
     "OTPVerification",
     "Case",
+    "CaseNote",
+    "CaseNoteVersion",
     "create_case_deadline",
     "get_upcoming_deadlines",
     "get_prefs_by_user_ids",
@@ -47,4 +57,8 @@ __all__ = [
     "get_notification_history",
     "submit_user_feedback",
     "get_user_feedback",
+    "record_knowledge_invalidation",
+    "list_knowledge_invalidations",
+    "get_knowledge_freshness_summary",
+    "process_due_knowledge_invalidations",
 ]

@@ -73,6 +73,9 @@ class Config:
     # API Key for OpenRouter. Must be provided for the AI features to work.
     OPENROUTER_API_KEY = _get_val("OPENROUTER_API_KEY", "")
     
+    # API Key for OpenAI.
+    OPENAI_API_KEY = _get_val("OPENAI_API_KEY", "")
+    
     # --- AI Request Performance & Reliability ---
     # The maximum number of tokens allowed for judgment summaries.
     SUMMARY_MAX_TOKENS = _get_int_env("SUMMARY_MAX_TOKENS", 280)
@@ -118,6 +121,10 @@ class Config:
     EXPORTS_DIR = _get_val("EXPORTS_DIR", str(PROJECT_ROOT / ".exports"))
     # Hours before export files expire and can be deleted
     EXPORT_FILE_EXPIRY_HOURS = _get_int_env("EXPORT_FILE_EXPIRY_HOURS", 24)
+    # Default privacy redaction profile for anonymized exports and reports
+    DEFAULT_PRIVACY_PROFILE = _get_val("DEFAULT_PRIVACY_PROFILE", "personal_identifiers")
+    # Optional JSON override for privacy profile definitions
+    PRIVACY_REDACTION_PROFILES_JSON = _get_val("PRIVACY_REDACTION_PROFILES_JSON", "")
     
     # --- Database Settings ---
     DATABASE_URL = _get_val("DATABASE_URL", "sqlite:///./legalassist.db")

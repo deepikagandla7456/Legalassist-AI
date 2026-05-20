@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from db.models import CaseDocument, CaseDeadline, CaseTimeline, NotificationLog
+from services.timeline_realtime import timeline_realtime_bus
 
 
 class TimelineService:
@@ -30,6 +31,40 @@ class TimelineService:
         db.add(event)
         db.commit()
         db.refresh(event)
+
+        # Publish realtime update to connected websocket clients (case-scoped)
+        # Fire-and-forget: timeline_realtime_bus is in-memory, so async scheduling
+        # keeps DB write latency low.
+        try:
+            payload = {
+                "type": "timeline_event",
+                "case_id": case_id,
+                "event_type": event.event_type,
+                "description": event.description,
+                "timestamp": event.event_date.isoformat(),
+                "metadata": event.event_metadata or {},
+                "event_id": event.id,
+            }
+            import asyncio
+            asyncio.get_running_loop().create_task(
+                timeline_realtime_bus.publish(case_id=case_id, payload=payload)
+            )
+        except RuntimeError:
+            # No running loop (e.g., during sync unit tests). Emit best-effort.
+            try:
+                import asyncio
+                asyncio.run(timeline_realtime_bus.publish(case_id=case_id, payload={
+                    "type": "timeline_event",
+                    "case_id": case_id,
+                    "event_type": event.event_type,
+                    "description": event.description,
+                    "timestamp": event.event_date.isoformat(),
+                    "metadata": event.event_metadata or {},
+                    "event_id": event.id,
+                }))
+            except Exception:
+                pass
+
         return event
 
     def get_case_timeline(self, db: Session, case_id: int) -> List[CaseTimeline]:

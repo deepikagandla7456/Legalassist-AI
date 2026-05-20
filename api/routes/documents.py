@@ -139,6 +139,8 @@ async def get_analysis_result(
         deadlines=result.get("deadlines", []),
         obligations=result.get("obligations", []),
         confidence_score=result.get("confidence_score", 0.0),
+        remedies_confidence_score=result.get("remedies_confidence_score"),
+        remedies_evidence_spans=result.get("remedies_evidence_spans", []),
         analysis_time_seconds=result.get("analysis_time_seconds", 0.0)
     )
 
@@ -171,9 +173,9 @@ async def cancel_analysis(
     description="Upload a PDF, Word, or text file for legal analysis."
 )
 async def upload_document_file(
+    http_request: Request,
     file: UploadFile = File(...),
     document_type: str = Form(default="unknown"),
-    http_request: Request = Depends(),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> AnalysisJobResponse:
     """

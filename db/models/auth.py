@@ -1,6 +1,5 @@
 import datetime as dt
-import enum
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from db.base import Base
 
@@ -21,6 +20,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     last_login = Column(DateTime(timezone=True), nullable=True)
     is_verified = Column(Boolean, default=True, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
 
     cases = relationship("Case", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", cascade="all, delete-orphan")
@@ -33,6 +33,7 @@ class User(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "is_verified": self.is_verified,
+            "is_admin": self.is_admin,
         }
 
 
@@ -65,10 +66,15 @@ class APIKey(Base):
     name = Column(String(255), nullable=False)
     key_hash = Column(String(64), nullable=False)
     key_salt = Column(String(32), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
     def is_valid(self) -> bool:
-        if self.expires_at and dt.datetime.now(dt.timezone.utc) > self.expires_at:
-            return False
-        return True
+        if not self.expires_at:
+            return True
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
+        now = dt.datetime.now(dt.timezone.utc)
+        return now <= expires_at
