@@ -127,6 +127,71 @@ def verify_token(token: str) -> Dict:
         raise InvalidTokenError("Invalid token")
 
 
+def revoke_jwt_token(token: str) -> bool:
+    """Revoke a JWT token by adding its JTI to the revocation table.
+
+    This verifies the token signature (but not expiration) against
+    current/previous secrets and enforces issuer/audience/type checks.
+    Returns True on success, False otherwise.
+    """
+    if not token:
+        return False
+
+    try:
+        # Fast path - extract without signature verification to get jti/exp
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+            jti = unverified.get("jti")
+            exp = unverified.get("exp")
+            if not jti or not exp:
+                return False
+        except Exception:
+            return False
+
+        payload = None
+        last_error = None
+        for secret in _get_jwt_secrets_to_try():
+            try:
+                payload = jwt.decode(
+                    token,
+                    secret,
+                    algorithms=[settings.JWT_ALGORITHM],
+                    issuer=settings.JWT_ISSUER,
+                    audience=settings.JWT_AUDIENCE,
+                    options={"verify_exp": False, "verify_signature": True, "require": ["exp", "iat", "iss", "aud", "jti", "type"]},
+                )
+                break
+            except jwt.InvalidTokenError as exc:
+                last_error = exc
+                continue
+
+        if payload is None:
+            return False
+
+        token_type = payload.get("type")
+        if token_type != "access":
+            return False
+
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not jti or not exp:
+            return False
+
+        # convert exp to datetime
+        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if isinstance(exp, (int, float)) else exp
+
+        # Persist revocation
+        with SessionLocal() as db:
+            # db-level revoke_token is available via database shim
+            from database import revoke_token, is_token_revoked
+
+            if not is_token_revoked(db, jti):
+                revoke_token(db, jti, expires_at)
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================================
 # API Key Management
 # ============================================================================
