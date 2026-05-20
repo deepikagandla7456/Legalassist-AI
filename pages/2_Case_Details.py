@@ -733,6 +733,17 @@ def main():
         get_default_export_fields,
         get_export_field_options,
     )
+    from services.privacy_redaction import get_default_privacy_profile, get_privacy_profile_options
+
+    privacy_profile_options = get_privacy_profile_options()
+    privacy_profile_labels = {item["name"]: item["label"] for item in privacy_profile_options}
+    privacy_profile = st.selectbox(
+        "Privacy profile",
+        options=[item["name"] for item in privacy_profile_options],
+        index=[item["name"] for item in privacy_profile_options].index(get_default_privacy_profile()),
+        format_func=lambda profile_name: privacy_profile_labels.get(profile_name, profile_name.replace("_", " ").title()),
+        key=f"privacy_profile_{case_id}",
+    )
 
     export_field_options = get_export_field_options()
     export_fields = st.multiselect(
@@ -766,6 +777,7 @@ def main():
         user_id=user_id,
         case_id=preview_case_id,
         field_ids=export_fields,
+        privacy_profile=privacy_profile,
     )
 
     with st.expander("Preview selected fields", expanded=False):
@@ -783,6 +795,7 @@ def main():
                     case_id=selected_case_ids[0],
                     format=export_formats[0],
                     field_ids=export_fields,
+                    privacy_profile=privacy_profile,
                 )
                 if export_artifact:
                     st.download_button(
@@ -799,6 +812,7 @@ def main():
                     case_ids=selected_case_ids,
                     field_ids=export_fields,
                     formats=export_formats,
+                    privacy_profile=privacy_profile,
                 )
                 if export_artifact:
                     st.download_button(
@@ -814,10 +828,10 @@ def main():
         from pdf_exporter import generate_anonymized_pdf
         from case_manager import generate_anonymized_case_data
 
-        anon_data = generate_anonymized_case_data(case_id)
+        anon_data = generate_anonymized_case_data(case_id, profile_name=privacy_profile)
         if anon_data:
             anon_id = anon_data["anonymized_id"]
-            anon_pdf_bytes = generate_anonymized_pdf(case_id, anon_id, user_id)
+            anon_pdf_bytes = generate_anonymized_pdf(case_id, anon_id, user_id, profile_name=privacy_profile)
             if anon_pdf_bytes:
                 st.download_button(
                     label="🔗 Download Anonymized PDF for Lawyer",

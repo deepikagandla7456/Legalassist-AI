@@ -700,9 +700,9 @@ def _generate_anonymized_case_id(case_id: int, created_at: Any) -> str:
     return _generate_anonymized_case_id_service(case_id, created_at)
 
 
-def generate_anonymized_case_data(case_id: int) -> Optional[Dict[str, Any]]:
+def generate_anonymized_case_data(case_id: int, profile_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     try:
-        return generate_anonymized_case_data_service(case_id)
+        return generate_anonymized_case_data_service(case_id, profile_name=profile_name)
     except Exception as e:
         logger.error(f"Error generating anonymized data: {str(e)}")
         return None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import hmac
 import os
 from pathlib import Path
@@ -13,9 +14,15 @@ from sqlalchemy.orm import Session
 from db.session import SessionLocal
 from db.models import Case, CaseDocument, CaseTimeline
 from config import Config
+from services.privacy_redaction import (
+    apply_privacy_profile,
+    get_privacy_profile_definition,
+    normalize_privacy_profile,
+)
 
 # Minimum secret length required for anonymization secret
 _MIN_SECRET_LENGTH = 32
+logger = logging.getLogger(__name__)
 
 
 def _get_case_anonymization_secret(override: Optional[str] = None) -> str:
@@ -88,7 +95,7 @@ def _generate_anonymized_case_id(case_id: int, created_at: Any, secret_override:
     return digest[:12]
 
 
-def generate_anonymized_case_data(case_id: int) -> Optional[Dict[str, Any]]:
+def generate_anonymized_case_data(case_id: int, profile_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     db: Session = SessionLocal()
     try:
         case = db.query(Case).filter(Case.id == case_id).first()
@@ -97,10 +104,20 @@ def generate_anonymized_case_data(case_id: int) -> Optional[Dict[str, Any]]:
 
         documents = db.query(CaseDocument).filter(CaseDocument.case_id == case_id).all()
         timeline = db.query(CaseTimeline).filter(CaseTimeline.case_id == case_id).all()
+        selected_profile = normalize_privacy_profile(profile_name)
+        profile = get_privacy_profile_definition(selected_profile)
         anonymized_id = _generate_anonymized_case_id(case_id=case_id, created_at=case.created_at)
 
-        return {
+        payload = {
+            "export": {
+                "case_id": case_id,
+                "generated_at": None,
+                "privacy_profile": selected_profile,
+                "privacy_profile_label": profile.get("label", selected_profile),
+            },
             "anonymized_id": anonymized_id,
+            "privacy_profile": selected_profile,
+            "privacy_profile_label": profile.get("label", selected_profile),
             "case_type": case.case_type,
             "jurisdiction": case.jurisdiction,
             "status": case.status.value,
@@ -122,5 +139,7 @@ def generate_anonymized_case_data(case_id: int) -> Optional[Dict[str, Any]]:
             ],
             "created_date": case.created_at.strftime("%B %Y"),
         }
+
+        return apply_privacy_profile(payload, selected_profile, anonymized_id=anonymized_id)
     finally:
         db.close()

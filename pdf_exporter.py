@@ -595,7 +595,7 @@ def generate_case_pdf(user_id: int, case_id: int) -> Optional[bytes]:
     finally:
         db.close()
 
-def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int) -> Optional[bytes]:
+def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int, profile_name: Optional[str] = None) -> Optional[bytes]:
     """
     Generate an anonymized PDF for external legal review.
     Strips all personal identifiers to maintain privacy.
@@ -613,6 +613,16 @@ def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int) -> Optiona
 
         documents = db.query(CaseDocument).filter(CaseDocument.case_id == case_id).all()
         timeline = db.query(CaseTimeline).filter(CaseTimeline.case_id == case_id).all()
+        from services.privacy_redaction import normalize_privacy_profile, get_privacy_profile_definition
+        selected_profile = normalize_privacy_profile(profile_name)
+        profile = get_privacy_profile_definition(selected_profile)
+
+        anonymized_data = None
+        try:
+            from case_manager import generate_anonymized_case_data
+            anonymized_data = generate_anonymized_case_data(case_id, profile_name=selected_profile)
+        except Exception:
+            anonymized_data = None
 
         pdf = LegalAssistPDF()
         pdf.add_page()
@@ -625,6 +635,7 @@ def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int) -> Optiona
         pdf.safe_set_font(pdf.main_font, '', 11)
         pdf.set_text_color(*TEXT_COLOR)
         pdf.cell(0, 8, f"Unique Reference ID: {anon_id}", 0, 1, 'C')
+        pdf.cell(0, 8, f"Privacy profile: {profile.get('label', selected_profile)}", 0, 1, 'C')
         pdf.ln(10)
 
         # Classification info
@@ -651,7 +662,16 @@ def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int) -> Optiona
 
         # Document abstracts
         pdf.section_header('Evidence Summary')
-        if documents:
+        if anonymized_data and anonymized_data.get("documents"):
+            for doc in anonymized_data["documents"]:
+                pdf.safe_set_font(pdf.main_font, 'B', 10)
+                pdf.cell(0, 7, f"Type: {doc.get('type', 'Document')}", 0, 1)
+                summary = doc.get("summary")
+                if summary:
+                    pdf.safe_set_font(pdf.main_font, '', 10)
+                    pdf.multi_cell(0, 5, str(summary))
+                pdf.ln(3)
+        elif documents:
             for doc in documents:
                 pdf.safe_set_font(pdf.main_font, 'B', 10)
                 pdf.cell(0, 7, f"Type: {doc.document_type.value}", 0, 1)
@@ -664,7 +684,13 @@ def generate_anonymized_pdf(case_id: int, anon_id: str, user_id: int) -> Optiona
 
         # Procedure Timeline
         pdf.section_header('Procedural Milestones')
-        if timeline:
+        if anonymized_data and anonymized_data.get("timeline"):
+            for event in anonymized_data["timeline"][:20]:
+                pdf.safe_set_font(pdf.main_font, 'B', 9)
+                pdf.cell(40, 6, str(event.get("event_type", "event")).replace('_', ' ').title(), 0, 0)
+                pdf.safe_set_font(pdf.main_font, '', 9)
+                pdf.cell(0, 6, str(event.get("description") or ""), 0, 1)
+        elif timeline:
             for event in timeline[:20]:
                 pdf.safe_set_font(pdf.main_font, 'B', 9)
                 pdf.cell(40, 6, event.event_date.strftime('%d %b %Y'), 0, 0)

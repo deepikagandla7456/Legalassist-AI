@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session
 
 from db.models import Attachment, Case, CaseDeadline, CaseDocument, CaseTimeline
 from database import SessionLocal
+from services.privacy_redaction import (
+    apply_privacy_profile,
+    normalize_privacy_profile,
+)
 
 
 ExportPayload = Dict[str, Any]
@@ -241,6 +245,7 @@ def build_case_export_payload(
     user_id: int,
     case_id: int,
     field_ids: Optional[Sequence[str]] = None,
+    privacy_profile: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     selected_fields = _normalize_fields(field_ids)
 
@@ -287,7 +292,7 @@ def build_case_export_payload(
         if "remedies" in selected_fields:
             payload["remedies"] = latest_document.remedies if latest_document else None
 
-        return payload
+        return apply_privacy_profile(payload, normalize_privacy_profile(privacy_profile))
 
 
 def _json_bytes(payload: Dict[str, Any]) -> bytes:
@@ -423,9 +428,15 @@ def build_case_export_artifact(
     case_id: int,
     format: str,
     field_ids: Optional[Sequence[str]] = None,
+    privacy_profile: Optional[str] = None,
 ) -> Optional[ExportArtifact]:
     selected_fields = _normalize_fields(field_ids)
-    payload = build_case_export_payload(user_id=user_id, case_id=case_id, field_ids=selected_fields)
+    payload = build_case_export_payload(
+        user_id=user_id,
+        case_id=case_id,
+        field_ids=selected_fields,
+        privacy_profile=privacy_profile,
+    )
     if not payload:
         return None
 
@@ -465,6 +476,7 @@ def build_case_export_bundle(
     case_ids: Sequence[int],
     field_ids: Optional[Sequence[str]] = None,
     formats: Sequence[str] = ("json", "pdf", "docx"),
+    privacy_profile: Optional[str] = None,
 ) -> Optional[ExportArtifact]:
     unique_case_ids = []
     seen_case_ids = set()
@@ -505,6 +517,7 @@ def build_case_export_bundle(
                     case_id=case_id,
                     format=format_name,
                     field_ids=selected_fields,
+                    privacy_profile=privacy_profile,
                 )
                 if not artifact:
                     continue
@@ -538,5 +551,11 @@ def get_case_export_preview(
     user_id: int,
     case_id: int,
     field_ids: Optional[Sequence[str]] = None,
+    privacy_profile: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    return build_case_export_payload(user_id=user_id, case_id=case_id, field_ids=field_ids)
+    return build_case_export_payload(
+        user_id=user_id,
+        case_id=case_id,
+        field_ids=field_ids,
+        privacy_profile=privacy_profile,
+    )
