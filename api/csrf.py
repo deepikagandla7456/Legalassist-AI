@@ -8,13 +8,14 @@ Provides protection against CSRF attacks by:
 """
 
 import secrets
-import logging
+import structlog
 from typing import Optional, Set, Callable
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from api.config import get_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 SAFE_METHODS: Set[str] = {"GET", "HEAD", "OPTIONS"}
 CSRF_TOKEN_HEADER = "X-CSRF-Token"
@@ -99,9 +100,16 @@ def validate_csrf_request(
 
     if require_token:
         token = request.headers.get(CSRF_TOKEN_HEADER) or request.headers.get(CSRF_TOKEN_HEADER.lower())
+        cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
         if not token:
             logger.warning("csrf_missing_token", path=str(request.url.path))
             raise CSRFError(detail=f"Missing CSRF token. Include '{CSRF_TOKEN_HEADER}' header.")
+        if not cookie_token:
+            logger.warning("csrf_missing_cookie", path=str(request.url.path))
+            raise CSRFError(detail="Missing CSRF cookie.")
+        if not secrets.compare_digest(token, cookie_token):
+            logger.warning("csrf_token_mismatch", path=str(request.url.path))
+            raise CSRFError(detail="CSRF token mismatch.")
 
 
 class CSRFProtectionMiddleware(BaseHTTPMiddleware):
@@ -125,18 +133,48 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        if path in self.exempt_paths or request.method in SAFE_METHODS:
+        if path in self.exempt_paths:
             return await call_next(request)
 
-        origin = get_origin(request)
-        if origin and not is_same_origin(request, self.allowed_hosts):
-            logger.warning("csrf_blocked", origin=origin, path=path)
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": "Cross-origin request blocked"},
+        # 1. Enforce token validation on state-mutating requests
+        if request.method not in SAFE_METHODS:
+            origin = get_origin(request)
+            if origin:
+                # If there's an Origin header, check same-origin and validate CSRF token
+                if not is_same_origin(request, self.allowed_hosts):
+                    logger.warning("csrf_cross_origin_blocked", origin=origin, path=path)
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "Cross-origin request blocked"},
+                    )
+                try:
+                    validate_csrf_request(request, allowed_hosts=self.allowed_hosts)
+                except CSRFError as exc:
+                    return JSONResponse(
+                        status_code=exc.status_code,
+                        content={"detail": exc.detail},
+                    )
+
+        # 2. Proceed with the request
+        response = await call_next(request)
+
+        # 3. Ensure csrf_token cookie is set on the response if not already present in the request's cookies
+        if CSRF_COOKIE_NAME not in request.cookies:
+            token = generate_csrf_token()
+            try:
+                settings = get_settings()
+                secure = settings.REQUIRE_HTTPS
+            except Exception:
+                secure = True
+            response.set_cookie(
+                CSRF_COOKIE_NAME,
+                token,
+                httponly=False,
+                samesite="lax",
+                secure=secure,
             )
 
-        return await call_next(request)
+        return response
 
 
 def csrf_protected(func: Callable) -> Callable:
@@ -161,3 +199,17 @@ def set_csrf_headers(response, token: str) -> None:
     response.headers["X-CSRF-Token"] = token
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+
+    # Also set the csrf_token cookie on the response
+    try:
+        settings = get_settings()
+        secure = settings.REQUIRE_HTTPS
+    except Exception:
+        secure = True
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        token,
+        httponly=False,
+        samesite="lax",
+        secure=secure,
+    )
