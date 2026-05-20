@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Callable
 
 import structlog
 from fastapi import HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api.config import get_settings
+from api.idempotency import IdempotencyManager
 from api.limiter import (
     build_rate_limit_response,
     get_rate_limit_policy,
@@ -30,6 +33,7 @@ from observability.instrumentation import (
 
 settings = get_settings()
 logger = structlog.get_logger(__name__)
+http_idempotency_manager = IdempotencyManager()
 
 SKIP_PATHS = {"/api/v1/health", "/api/v1/health/ready", "/api/v1/health/live", "/metrics", "/"}
 UPLOAD_PATH_PREFIXES = (
@@ -40,6 +44,122 @@ UPLOAD_PATH_PREFIXES = (
 ANALYTICS_PATH_PREFIXES = (
     "/api/v1/analytics",
 )
+IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _request_principal(request: Request) -> str:
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        return auth_header
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        return api_key
+    user_id = request.headers.get("x-user-id")
+    if user_id:
+        return user_id
+    return "anonymous"
+
+
+def _idempotency_exempt_path(path: str) -> bool:
+    return path in SKIP_PATHS or path in {"/openapi.json", "/docs", "/redoc"}
+
+
+def _response_headers_for_cache(response: Response) -> dict:
+    headers = {}
+    for key, value in response.headers.items():
+        lower_key = key.lower()
+        if lower_key in {"content-length", "transfer-encoding", "connection", "date", "server"}:
+            continue
+        headers[key] = value
+    return headers
+
+
+async def idempotency_middleware(request: Request, call_next: Callable):
+    """Replay successful write responses when the client retries with the same key."""
+
+    if request.method.upper() not in IDEMPOTENT_METHODS or _idempotency_exempt_path(request.url.path):
+        return await call_next(request)
+
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if not idempotency_key:
+        return JSONResponse(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            content={
+                "error_code": "IDEMPOTENCY_KEY_REQUIRED",
+                "message": "Idempotency-Key header is required for write operations.",
+            },
+        )
+
+    body = await request.body()
+    body_fingerprint = hashlib.sha256(body or b"").hexdigest()
+    key = http_idempotency_manager.build_http_key(
+        method=request.method,
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        principal=_request_principal(request),
+        body=body,
+    )
+
+    cached = http_idempotency_manager.get_http_response(key)
+    if cached:
+        if cached.get("request_fingerprint") and cached["request_fingerprint"] != body_fingerprint:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "error_code": "IDEMPOTENCY_KEY_REUSED",
+                    "message": "This Idempotency-Key was already used with a different request body.",
+                },
+            )
+        return Response(
+            content=cached["body"],
+            status_code=cached["status_code"],
+            headers={**cached["headers"], "X-Idempotent-Replay": "true"},
+            media_type=cached.get("media_type") or cached["headers"].get("content-type"),
+        )
+
+    if not http_idempotency_manager.acquire_http(key, ttl=86400):
+        cached = http_idempotency_manager.get_http_response(key)
+        if cached:
+            return Response(
+                content=cached["body"],
+                status_code=cached["status_code"],
+                headers={**cached["headers"], "X-Idempotent-Replay": "true"},
+                media_type=cached.get("media_type") or cached["headers"].get("content-type"),
+            )
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error_code": "IDEMPOTENCY_IN_PROGRESS",
+                "message": "A request with this idempotency key is already in progress.",
+            },
+        )
+
+    response = await call_next(request)
+
+    response_body = b""
+    async for chunk in response.body_iterator:
+        response_body += chunk
+
+    headers = _response_headers_for_cache(response)
+    cache_payload = {
+        "status_code": response.status_code,
+        "headers": headers,
+        "body": response_body,
+        "media_type": response.media_type or headers.get("content-type"),
+        "request_fingerprint": body_fingerprint,
+    }
+
+    if response.status_code < 400:
+        http_idempotency_manager.store_http_response(key, cache_payload, ttl=86400)
+    else:
+        http_idempotency_manager.release_http_lock(key)
+
+    return Response(
+        content=response_body,
+        status_code=response.status_code,
+        headers=headers,
+        media_type=response.media_type or headers.get("content-type"),
+    )
 
 
 async def rate_limit_middleware(request: Request, call_next: Callable):
