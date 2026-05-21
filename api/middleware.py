@@ -11,9 +11,9 @@ from typing import Callable
 
 import structlog
 from fastapi import HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from api.config import get_settings
-from api.errors import structured_error_response
 from api.middlewares.idempotency import http_idempotency_manager, idempotency_middleware, is_safe_to_cache
 from api.middlewares.rate_limit import rate_limit_middleware
 from api.middlewares.request_size import request_size_limit_middleware

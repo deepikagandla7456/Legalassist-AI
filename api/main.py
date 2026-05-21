@@ -16,7 +16,6 @@ from fastapi import status
 import structlog
 
 from api.config import get_settings
-from api.errors import StructuredAPIError, register_structured_error_handlers, structured_error_response
 from api.middlewares import register_middlewares
 from api.csrf import CSRFProtectionMiddleware
 from api.limiter import cleanup_limiter
@@ -152,7 +151,6 @@ def create_app() -> FastAPI:
 
     # Add middleware through a single registration entry to preserve order.
     register_middlewares(app)
-    register_structured_error_handlers(app)
 
     if _GRAPHQL_ROUTER is not None:
         app.include_router(
