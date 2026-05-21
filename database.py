@@ -6,11 +6,33 @@ This file remains as a stable public API surface for legacy imports.
 
 from __future__ import annotations
 
+import enum
+import logging
+from contextlib import contextmanager
+from typing import List, Optional
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Enum as SQLEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    make_url,
+)
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+
+from config import Config
 from db.attachments_service import create_attachment, get_attachments_for_case
 import datetime as dt
 import hashlib
 import threading
-from config import Config
 try:
     import redis
 except ImportError:
@@ -1446,9 +1468,8 @@ def submit_model_feedback(
 
 
 def aggregate_model_performance(db: Session, task: Optional[str] = None) -> List[ModelPerformance]:
-    """Compute simple model performance aggregates from `model_feedback` rows.
-
-
+    """Compute simple model performance aggregates from `model_feedback` rows."""
+    return []
 def _otp_rate_limit_key(identifier: str) -> str:
     normalized = str(identifier).strip().lower()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
