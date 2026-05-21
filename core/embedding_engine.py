@@ -22,8 +22,8 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI
-openai.api_key = Config.OPENAI_API_KEY
+# Initialize OpenAI when configured.
+openai.api_key = getattr(Config, "OPENAI_API_KEY", "") or getattr(Config, "OPENROUTER_API_KEY", "")
 
 
 class EmbeddingEngine:

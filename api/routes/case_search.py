@@ -38,6 +38,8 @@ def search_similar_cases(
     jurisdiction: Optional[str] = None,
     outcome: Optional[str] = None,
     exclude_same_user: bool = Query(True),
+    cross_jurisdiction: bool = Query(False),
+    jurisdiction_weight: float = Query(0.2, ge=0, le=1),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -67,6 +69,8 @@ def search_similar_cases(
             filter_jurisdiction=jurisdiction,
             filter_outcome=outcome,
             exclude_same_user=exclude_same_user,
+            cross_jurisdiction=cross_jurisdiction,
+            jurisdiction_weight=jurisdiction_weight,
         )
         
         return {

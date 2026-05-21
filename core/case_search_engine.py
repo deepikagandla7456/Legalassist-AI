@@ -18,6 +18,7 @@ from database import (
     CaseDocument,
 )
 from core.embedding_engine import EmbeddingEngine
+from core.jurisdiction_utils import jurisdiction_similarity, normalize_jurisdiction
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ class SemanticCaseSearch:
         filter_jurisdiction: Optional[str] = None,
         filter_outcome: Optional[str] = None,
         exclude_same_user: bool = True,
+        cross_jurisdiction: bool = False,
+        jurisdiction_weight: float = 0.2,
     ) -> List[Dict[str, Any]]:
         """Find similar cases to the given case
         
@@ -88,6 +91,7 @@ class SemanticCaseSearch:
             
             # Get all case embeddings (excluding query case)
             query = db.query(CaseEmbedding).filter(CaseEmbedding.case_id != case_id)
+            query_profile = normalize_jurisdiction(filter_jurisdiction or query_case.jurisdiction)
             
             # Apply filters
             if filter_case_type:
@@ -96,8 +100,8 @@ class SemanticCaseSearch:
                 # Default: same case type
                 query = query.filter(CaseEmbedding.case_type == query_case.case_type)
             
-            if filter_jurisdiction:
-                query = query.filter(CaseEmbedding.jurisdiction == filter_jurisdiction)
+            if filter_jurisdiction and cross_jurisdiction:
+                query = query.filter(CaseEmbedding.jurisdiction != "")
             
             if filter_outcome:
                 query = query.filter(CaseEmbedding.outcome == filter_outcome)
@@ -115,11 +119,11 @@ class SemanticCaseSearch:
                     continue
                 
                 # Calculate similarity
-                similarity = self.embedding_engine.cosine_similarity(
+                semantic_similarity = self.embedding_engine.cosine_similarity(
                     query_vector, candidate_vector
                 )
                 
-                if similarity < min_similarity:
+                if semantic_similarity < min_similarity:
                     continue
                 
                 # Get case details
@@ -128,6 +132,21 @@ class SemanticCaseSearch:
                 # Skip same user if requested
                 if exclude_same_user and candidate_case.user_id == query_case.user_id:
                     continue
+
+                candidate_profile = normalize_jurisdiction(candidate_case.jurisdiction)
+                jurisdiction_score = jurisdiction_similarity(
+                    query_profile.canonical or query_case.jurisdiction,
+                    candidate_profile.canonical or candidate_case.jurisdiction,
+                )
+                if not cross_jurisdiction and jurisdiction_score < 1.0:
+                    continue
+
+                final_score = semantic_similarity
+                if cross_jurisdiction:
+                    final_score = (
+                        (1.0 - jurisdiction_weight) * semantic_similarity
+                        + jurisdiction_weight * jurisdiction_score
+                    )
                 
                 # Build result
                 result = {
@@ -135,10 +154,15 @@ class SemanticCaseSearch:
                     "case_number": candidate_case.case_number,
                     "case_type": candidate_case.case_type,
                     "jurisdiction": candidate_case.jurisdiction,
+                    "normalized_jurisdiction": candidate_profile.canonical or candidate_case.jurisdiction,
                     "title": candidate_case.title,
                     "status": candidate_case.status.value,
                     "outcome": embedding_obj.outcome,
-                    "similarity_score": round(similarity, 3),
+                    "semantic_similarity": round(semantic_similarity, 3),
+                    "jurisdiction_similarity": round(jurisdiction_score, 3),
+                    "confidence_score": round(final_score, 3),
+                    "similarity_score": round(final_score, 3),
+                    "cross_jurisdiction": cross_jurisdiction,
                     "created_at": candidate_case.created_at.isoformat(),
                 }
                 
@@ -150,7 +174,7 @@ class SemanticCaseSearch:
                 results.append(result)
             
             # Sort by similarity (descending)
-            results.sort(key=lambda x: x["similarity_score"], reverse=True)
+            results.sort(key=lambda x: x["confidence_score"], reverse=True)
             
             # Return top N
             return results[:limit]
@@ -167,6 +191,8 @@ class SemanticCaseSearch:
         min_similarity: float = 0.5,
         filter_case_type: Optional[str] = None,
         filter_jurisdiction: Optional[str] = None,
+        cross_jurisdiction: bool = False,
+        jurisdiction_weight: float = 0.2,
     ) -> List[Dict[str, Any]]:
         """Search for similar cases by free text
         
@@ -196,8 +222,8 @@ class SemanticCaseSearch:
             if filter_case_type:
                 query = query.filter(CaseEmbedding.case_type == filter_case_type)
             
-            if filter_jurisdiction:
-                query = query.filter(CaseEmbedding.jurisdiction == filter_jurisdiction)
+            if filter_jurisdiction and cross_jurisdiction:
+                query = query.filter(CaseEmbedding.jurisdiction != "")
             
             embeddings = query.all()
             
@@ -210,23 +236,39 @@ class SemanticCaseSearch:
                 if candidate_vector is None:
                     continue
                 
-                similarity = self.embedding_engine.cosine_similarity(
+                semantic_similarity = self.embedding_engine.cosine_similarity(
                     search_array, candidate_vector
                 )
                 
-                if similarity < min_similarity:
+                if semantic_similarity < min_similarity:
                     continue
                 
                 case = embedding_obj.case
+                candidate_profile = normalize_jurisdiction(case.jurisdiction)
+                jurisdiction_score = jurisdiction_similarity(
+                    filter_jurisdiction,
+                    candidate_profile.canonical or case.jurisdiction,
+                )
+                final_score = semantic_similarity
+                if cross_jurisdiction:
+                    final_score = (
+                        (1.0 - jurisdiction_weight) * semantic_similarity
+                        + jurisdiction_weight * jurisdiction_score
+                    )
                 result = {
                     "case_id": case.id,
                     "case_number": case.case_number,
                     "case_type": case.case_type,
                     "jurisdiction": case.jurisdiction,
+                    "normalized_jurisdiction": candidate_profile.canonical or case.jurisdiction,
                     "title": case.title,
                     "status": case.status.value,
                     "outcome": embedding_obj.outcome,
-                    "similarity_score": round(similarity, 3),
+                    "semantic_similarity": round(semantic_similarity, 3),
+                    "jurisdiction_similarity": round(jurisdiction_score, 3),
+                    "confidence_score": round(final_score, 3),
+                    "similarity_score": round(final_score, 3),
+                    "cross_jurisdiction": cross_jurisdiction,
                     "created_at": case.created_at.isoformat(),
                 }
                 
@@ -237,7 +279,7 @@ class SemanticCaseSearch:
                 results.append(result)
             
             # Sort by similarity
-            results.sort(key=lambda x: x["similarity_score"], reverse=True)
+            results.sort(key=lambda x: x["confidence_score"], reverse=True)
             return results[:limit]
             
         except Exception as e:
