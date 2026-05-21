@@ -84,6 +84,18 @@ def test_api_key_valid_without_user(setup_database):
     assert data["role"] == "api"
 
 
+def test_api_key_valid_without_user_via_x_api_key(setup_database):
+    db = setup_database
+    combined_key, record = create_api_key_record(db, name="Test Key No User")
+
+    response = client.get("/protected", headers={"X-API-Key": combined_key})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user_id"] == 0
+    assert data["email"] == "api_user"
+    assert data["role"] == "api"
+
+
 def test_api_key_valid_linked_to_user(setup_database):
     db = setup_database
     # Create test user in DB
