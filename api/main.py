@@ -27,7 +27,7 @@ from api.validation import (
 )
 
 # Import routes
-from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search
+from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, speech
 
 settings = get_settings()
 logger = structlog.get_logger(__name__)
@@ -90,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(deadlines.router)
     app.include_router(auth.router)
     app.include_router(case_search.router)  # Case search and precedent matching
+    app.include_router(speech.router)
     # Model feedback & optimization
     from api.routes import models as models_router
     app.include_router(models_router.router)
