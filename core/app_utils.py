@@ -543,6 +543,11 @@ def output_language_mismatch_detected(output_text, language, min_wrong_chars=6):
         allowed_count == 0 or wrong_count / max(allowed_count, 1) > 0.15
     )
 
+def analyze_legal_citations(text: str, known_references: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Extract and validate legal citations from text."""
+    from core.citation_engine import analyze_legal_citations as _analyze_legal_citations
+
+    return _analyze_legal_citations(text, known_references=known_references)
 
 # ==================== LLM PROMPTS ====================
 
