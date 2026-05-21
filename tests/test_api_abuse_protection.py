@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import json
+
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/1")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-for-abuse-protection")
+os.environ.setdefault("APP_ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 import pytest
 from fastapi import status
@@ -12,6 +19,7 @@ from starlette.requests import Request
 from api import limiter as limiter_module
 from api.limiter import get_rate_limit_policy, resolve_rate_limit_identifier
 from api.middleware import rate_limit_middleware, request_size_limit_middleware
+from api.middlewares import register_middlewares
 from api.validation import ValidationConfig
 
 
@@ -150,3 +158,30 @@ def test_get_rate_limit_policy_overrides_sensitive_routes():
     assert auth_rule.requests == 5
     assert upload_rule.requests == 5
     assert search_rule.requests == 30
+
+
+def test_register_middlewares_preserves_order(monkeypatch):
+    class DummyApp:
+        def __init__(self):
+            self.calls = []
+
+        def middleware(self, _type):
+            def decorator(func):
+                self.calls.append(func.__name__)
+                return func
+
+            return decorator
+
+    monkeypatch.setattr("api.middlewares.rate_limit.settings.RATE_LIMIT_ENABLED", True)
+
+    app = DummyApp()
+    register_middlewares(app)
+
+    assert app.calls == [
+        "request_size_limit_middleware",
+        "idempotency_middleware",
+        "add_correlation_id_middleware",
+        "logging_middleware",
+        "error_handling_middleware",
+        "rate_limit_middleware",
+    ]
