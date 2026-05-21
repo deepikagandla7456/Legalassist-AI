@@ -100,7 +100,7 @@ def validate_csrf_request(
         raise CSRFError(error_code="CSRF_CROSS_ORIGIN_REJECTED", detail="Cross-origin requests not allowed")
 
     if require_token:
-        token = request.headers.get(CSRF_TOKEN_HEADER) or request.headers.get(CSRF_TOKEN_HEADER.lower())
+        token = request.headers.get(CSRF_TOKEN_HEADER)
         cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
         if not token:
             logger.warning("csrf_missing_token", path=str(request.url.path))
