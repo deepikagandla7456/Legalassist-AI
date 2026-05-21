@@ -18,6 +18,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from core.app_utils import (
     get_client,
     extract_text_from_pdf,
+    analyze_legal_citations,
     compress_text,
     english_leakage_detected,
     output_language_mismatch_detected,
@@ -170,6 +171,9 @@ def render_page():
                         raw_text = extract_text_from_pdf(uploaded_file, enable_ocr=enable_ocr, ocr_languages=ocr_languages)
                     else:
                         raw_text = pasted_text
+
+                    citation_analysis = analyze_legal_citations(raw_text)
+                    st.session_state["citation_analysis"] = citation_analysis
                     
                     # --- NEW RAG STATE ---
                     st.session_state["judgment_raw_text"] = raw_text
@@ -233,6 +237,27 @@ def render_page():
                         # render_shareable_result_box accepts the tuple directly
                         render_shareable_result_box(result, ui)
                         st.success(ui["summary_success"])
+
+                        citation_analysis = st.session_state.get("citation_analysis", {"citations": [], "summary": {}})
+                        citation_summary = citation_analysis.get("summary", {})
+                        citation_items = citation_analysis.get("citations", [])
+                        if citation_items:
+                            st.markdown("### 📚 Citation Extraction & Validation")
+                            c1, c2, c3, c4 = st.columns(4)
+                            with c1:
+                                st.metric("Citations", citation_summary.get("total_citations", 0))
+                            with c2:
+                                st.metric("Validated", citation_summary.get("validated_citations", 0))
+                            with c3:
+                                st.metric("Needs review", citation_summary.get("needs_review", 0))
+                            with c4:
+                                st.metric("Deprecated", citation_summary.get("deprecated_citations", 0))
+
+                            with st.expander("View extracted citations", expanded=False):
+                                for item in citation_items[:10]:
+                                    st.write(
+                                        f"- {item['citation']} ({item['citation_type']}, {item['status']}, confidence {item['confidence']:.2f})"
+                                    )
 
                         # ===== DRAFTING SECTION =====
                         st.markdown("---")
