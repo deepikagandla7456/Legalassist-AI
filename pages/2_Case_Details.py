@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 from auth import require_auth, redirect_to_login, get_current_user_id
-from case_manager import get_case_detail, upload_case_document, mark_deadline_completed, mark_deadline_incomplete, add_manual_deadline, mark_case_appealed, mark_case_closed, mark_case_active, generate_case_summary_text
+from case_manager import get_case_detail, upload_case_document, mark_deadline_completed, mark_deadline_incomplete, add_manual_deadline, mark_case_appealed, mark_case_closed, mark_case_active, generate_case_summary_text, add_case_comment, update_case_presence
 from case_manager import upload_case_attachment
 from core import extract_text_from_pdf
 from database import DocumentType, CaseStatus, SessionLocal, UserPreference
@@ -88,6 +88,84 @@ def render_timeline_section(timeline: list):
                 """,
                 unsafe_allow_html=True,
             )
+
+
+def render_collaboration_section(case_id: int, user_id: int, comments: list, presence: list):
+    """Render collaborative discussion and presence state for a case."""
+    st.subheader("🤝 Collaboration")
+    st.caption("Threaded comments, replies, and recent collaborator activity for this case.")
+
+    live_updates = st.checkbox("Live updates", value=True, key="case_live_updates")
+    if live_updates:
+        st.markdown('<meta http-equiv="refresh" content="10">', unsafe_allow_html=True)
+
+    update_case_presence(user_id, case_id, active_view="collaboration")
+
+    active_people = [p for p in presence if p.get("last_seen")]
+    if active_people:
+        names = [p.get("user_email") or f"User {p.get('user_id')}" for p in active_people]
+        st.info("Active now: " + ", ".join(names))
+    else:
+        st.info("No recent collaborator activity yet.")
+
+    comment_by_id = {comment["id"]: comment for comment in comments}
+    children = {}
+    for comment in comments:
+        children.setdefault(comment.get("parent_comment_id"), []).append(comment)
+
+    def render_comment_branch(parent_id, depth=0):
+        for comment in sorted(children.get(parent_id, []), key=lambda item: item.get("created_at") or ""):
+            author = comment.get("user_email") or f"User {comment.get('user_id')}"
+            timestamp = comment.get("created_at", "")
+            try:
+                timestamp = datetime.fromisoformat(timestamp).strftime("%d %b %Y, %H:%M")
+            except Exception:
+                pass
+
+            with st.container(border=True):
+                indent = "&nbsp;" * (depth * 4)
+                st.markdown(f"{indent}**{author}** • {timestamp}", unsafe_allow_html=True)
+                st.write(comment.get("comment_text", ""))
+                if comment.get("is_resolved"):
+                    st.success("Resolved")
+            render_comment_branch(comment.get("id"), depth + 1)
+
+    if comments:
+        render_comment_branch(None)
+    else:
+        st.info("No comments yet. Start the discussion below.")
+
+    st.markdown("---")
+
+    with st.form("case_comment_form", clear_on_submit=True):
+        reply_options = ["Top-level comment"] + [
+            f"Reply to #{comment['id']} - {(comment.get('comment_text') or '')[:40]}"
+            for comment in comments
+        ]
+        reply_choice = st.selectbox("Reply target", reply_options)
+        comment_text = st.text_area("Add a comment", height=120, placeholder="Share analysis, ask a question, or leave a review note...")
+        submitted = st.form_submit_button("Post comment", use_container_width=True)
+
+        if submitted:
+            parent_comment_id = None
+            if reply_choice != "Top-level comment":
+                try:
+                    parent_comment_id = int(reply_choice.split("#")[1].split(" ")[0])
+                except Exception:
+                    parent_comment_id = None
+
+            result = add_case_comment(
+                user_id=user_id,
+                case_id=case_id,
+                comment_text=comment_text,
+                parent_comment_id=parent_comment_id,
+                active_view="collaboration",
+            )
+            if result:
+                st.success("Comment posted")
+                st.rerun()
+            else:
+                st.error("Failed to post comment")
 
 
 def render_documents_section(case_id: int, documents: list, user_id: int):
@@ -488,6 +566,10 @@ def main():
     documents = case_data["documents"]
     deadlines = case_data["deadlines"]
     remedies = case_data.get("remedies")
+    comments = case_data.get("comments", [])
+    presence = case_data.get("presence", [])
+
+    update_case_presence(user_id, case_id, active_view="case_details")
 
     # Keep attachments and deadlines in session for uploader convenience
     st.session_state.setdefault("case_attachments", case_data.get("attachments", []))
@@ -525,7 +607,7 @@ def main():
     st.markdown("---")
 
     # Main content - tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📅 Timeline", "📄 Documents", "⏰ Deadlines", "⚖️ Remedies"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Timeline", "📄 Documents", "⏰ Deadlines", "⚖️ Remedies", "🤝 Collaboration"])
 
     with tab1:
         render_timeline_section(timeline)
@@ -538,6 +620,9 @@ def main():
 
     with tab4:
         render_remedies_section(remedies)
+
+    with tab5:
+        render_collaboration_section(case_id, user_id, comments, presence)
 
     st.markdown("---")
 

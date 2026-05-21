@@ -20,6 +20,8 @@ from database import (
     Case,
     CaseDocument,
     CaseTimeline,
+    CaseComment,
+    CasePresence,
     CaseDeadline,
     CaseStatus,
     DocumentType,
@@ -29,8 +31,12 @@ from database import (
     get_case_by_id,
     get_case_documents,
     get_case_timeline,
+    get_case_comments,
+    get_case_presence,
     create_case_document,
     create_timeline_event,
+    create_case_comment,
+    upsert_case_presence,
     update_case_status,
     create_attachment,
     get_attachments_for_case,
@@ -245,6 +251,34 @@ def get_case_detail(user_id: int, case_id: int) -> Optional[Dict[str, Any]]:
             for event in timeline
         ]
 
+        comments = get_case_comments(db, case_id)
+        comments_list = [
+            {
+                "id": comment.id,
+                "parent_comment_id": comment.parent_comment_id,
+                "user_id": comment.user_id,
+                "user_email": comment.user.email if comment.user else None,
+                "comment_text": comment.comment_text,
+                "is_resolved": comment.is_resolved,
+                "created_at": comment.created_at.isoformat(),
+                "updated_at": comment.updated_at.isoformat() if comment.updated_at else None,
+            }
+            for comment in comments
+        ]
+
+        presence = get_case_presence(db, case_id)
+        presence_list = [
+            {
+                "id": item.id,
+                "user_id": item.user_id,
+                "user_email": item.user.email if item.user else None,
+                "active_view": item.active_view,
+                "cursor_anchor": item.cursor_anchor,
+                "last_seen": item.last_seen.isoformat(),
+            }
+            for item in presence
+        ]
+
         # Get deadlines
         deadlines = db.query(CaseDeadline).filter(
             CaseDeadline.case_id == case_id
@@ -278,6 +312,8 @@ def get_case_detail(user_id: int, case_id: int) -> Optional[Dict[str, Any]]:
             },
             "documents": docs_list,
             "timeline": timeline_list,
+            "comments": comments_list,
+            "presence": presence_list,
             "deadlines": deadlines_list,
             "remedies": remedies,
             "attachments": attachments_list,
@@ -345,6 +381,60 @@ def upload_case_document(
 
     except Exception as e:
         logger.error(f"Error uploading document: {str(e)}")
+        return None
+    finally:
+        db.close()
+
+
+def add_case_comment(
+    user_id: int,
+    case_id: int,
+    comment_text: str,
+    parent_comment_id: Optional[int] = None,
+    active_view: Optional[str] = None,
+) -> Optional[CaseComment]:
+    """Add a collaboration comment to a case."""
+    db = SessionLocal()
+    try:
+        comment = create_case_comment(
+            db=db,
+            case_id=case_id,
+            user_id=user_id,
+            comment_text=comment_text,
+            parent_comment_id=parent_comment_id,
+        )
+        upsert_case_presence(
+            db=db,
+            case_id=case_id,
+            user_id=user_id,
+            active_view=active_view or "collaboration",
+        )
+        return comment
+    except Exception as e:
+        logger.error(f"Error adding case comment: {str(e)}")
+        return None
+    finally:
+        db.close()
+
+
+def update_case_presence(
+    user_id: int,
+    case_id: int,
+    active_view: Optional[str] = None,
+    cursor_anchor: Optional[str] = None,
+) -> Optional[CasePresence]:
+    """Update a collaborator's presence for a case."""
+    db = SessionLocal()
+    try:
+        return upsert_case_presence(
+            db=db,
+            case_id=case_id,
+            user_id=user_id,
+            active_view=active_view or "case_details",
+            cursor_anchor=cursor_anchor,
+        )
+    except Exception as e:
+        logger.error(f"Error updating case presence: {str(e)}")
         return None
     finally:
         db.close()

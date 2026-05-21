@@ -515,6 +515,18 @@ class User(Base):
         back_populates="user", 
         cascade="all, delete-orphan"
     )
+
+    case_comments = relationship(
+        "CaseComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    case_presence = relationship(
+        "CasePresence",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     
     preferences = relationship(
         "UserPreference", 
@@ -685,10 +697,11 @@ class Case(Base):
     deadlines = relationship("CaseDeadline", back_populates="case", cascade="all, delete-orphan")
     timeline_events = relationship("CaseTimeline", back_populates="case", cascade="all, delete-orphan")
     attachments = relationship("Attachment", back_populates="case", cascade="all, delete-orphan", order_by="Attachment.uploaded_at")
+    comments = relationship("CaseComment", back_populates="case", cascade="all, delete-orphan", order_by="CaseComment.created_at")
+    presence_updates = relationship("CasePresence", back_populates="case", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Case(case_number={self.case_number}, status={self.status})>"
-
 
 class CaseDocument(Base):
     """Model for storing documents uploaded for a case"""
@@ -749,6 +762,50 @@ class CaseTimeline(Base):
 
     def __repr__(self):
         return f"<CaseTimeline(case_id={self.case_id}, event_type={self.event_type})>"
+
+
+class CaseComment(Base):
+    """Threaded collaboration comment attached to a case."""
+    __tablename__ = "case_comments"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_comment_id = Column(Integer, ForeignKey("case_comments.id", ondelete="CASCADE"), nullable=True, index=True)
+    comment_text = Column(Text, nullable=False)
+    is_resolved = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False, index=True)
+    updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
+
+    case = relationship("Case", back_populates="comments")
+    user = relationship("User", back_populates="case_comments")
+    parent_comment = relationship("CaseComment", remote_side=[id], back_populates="replies")
+    replies = relationship("CaseComment", back_populates="parent_comment", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<CaseComment(case_id={self.case_id}, user_id={self.user_id})>"
+
+
+class CasePresence(Base):
+    """Tracks recently active collaborators on a case."""
+    __tablename__ = "case_presence"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    active_view = Column(String(255), nullable=True)
+    cursor_anchor = Column(String(255), nullable=True)
+    last_seen = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
+
+    case = relationship("Case", back_populates="presence_updates")
+    user = relationship("User", back_populates="case_presence")
+
+    __table_args__ = (UniqueConstraint("case_id", "user_id", name="uq_case_presence_user"),)
+
+    def __repr__(self):
+        return f"<CasePresence(case_id={self.case_id}, user_id={self.user_id}, last_seen={self.last_seen})>"
 
 
 # ==================== Case Search & Precedent Matching Models ====================
@@ -1773,6 +1830,106 @@ def get_case_timeline(db: Session, case_id: int) -> List[CaseTimeline]:
     return db.query(CaseTimeline).filter(
         CaseTimeline.case_id == case_id
     ).order_by(CaseTimeline.event_date.desc()).all()
+
+
+def create_case_comment(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    comment_text: str,
+    parent_comment_id: Optional[int] = None,
+) -> CaseComment:
+    """Create a threaded collaboration comment for a case."""
+    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
+    if not case:
+        raise PermissionError("case_id not found or not owned by the provided user_id")
+
+    if parent_comment_id is not None:
+        parent_comment = db.query(CaseComment).filter(
+            CaseComment.id == parent_comment_id,
+            CaseComment.case_id == case_id,
+        ).first()
+        if not parent_comment:
+            raise ValueError("parent_comment_id is invalid for this case")
+
+    text = (comment_text or "").strip()
+    if not text:
+        raise ValueError("comment_text cannot be empty")
+
+    comment = CaseComment(
+        case_id=case_id,
+        user_id=user_id,
+        parent_comment_id=parent_comment_id,
+        comment_text=text,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+
+    create_timeline_event(
+        db=db,
+        case_id=case_id,
+        event_type="comment_replied" if parent_comment_id else "comment_added",
+        description=text[:240],
+        metadata={
+            "comment_id": comment.id,
+            "parent_comment_id": parent_comment_id,
+        },
+    )
+    return comment
+
+
+def get_case_comments(db: Session, case_id: int) -> List[CaseComment]:
+    """Get threaded case comments ordered by creation time."""
+    return db.query(CaseComment).filter(
+        CaseComment.case_id == case_id
+    ).order_by(CaseComment.created_at.asc()).all()
+
+
+def upsert_case_presence(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    active_view: Optional[str] = None,
+    cursor_anchor: Optional[str] = None,
+) -> CasePresence:
+    """Mark a collaborator as recently active on a case."""
+    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
+    if not case:
+        raise PermissionError("case_id not found or not owned by the provided user_id")
+
+    presence = db.query(CasePresence).filter(
+        CasePresence.case_id == case_id,
+        CasePresence.user_id == user_id,
+    ).first()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    if presence:
+        presence.active_view = active_view
+        presence.cursor_anchor = cursor_anchor
+        presence.last_seen = now
+    else:
+        presence = CasePresence(
+            case_id=case_id,
+            user_id=user_id,
+            active_view=active_view,
+            cursor_anchor=cursor_anchor,
+            last_seen=now,
+        )
+        db.add(presence)
+
+    db.commit()
+    db.refresh(presence)
+    return presence
+
+
+def get_case_presence(db: Session, case_id: int, active_window_minutes: int = 5) -> List[CasePresence]:
+    """Return collaborators active within a recent time window."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=active_window_minutes)
+    return db.query(CasePresence).filter(
+        CasePresence.case_id == case_id,
+        CasePresence.last_seen >= cutoff,
+    ).order_by(CasePresence.last_seen.desc()).all()
 
 
 def get_user_stats(db: Session, user_id: int) -> dict:
