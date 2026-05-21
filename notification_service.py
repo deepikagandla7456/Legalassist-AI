@@ -11,6 +11,7 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import html
+import tenacity
 from config import Config
 
 # Celery integration for asynchronous task execution
@@ -82,6 +83,20 @@ class SMSClient:
         else:
             self.client = TwilioClient(self.account_sid, self.auth_token)
 
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=60),
+        stop=tenacity.stop_after_attempt(5),
+        retry=tenacity.retry_if_exception(lambda e: '503' in str(e) or '429' in str(e)),
+        reraise=True
+    )
+    def _create_message_with_retry(self, to_number: str, message: str):
+        """Internal method to send SMS with tenacity retry for 503/429 errors."""
+        return self.client.messages.create(
+            body=message,
+            from_=self.from_number,
+            to=to_number,
+        )
+
     def send_sms(self, to_number: str, message: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Send SMS message.
@@ -101,14 +116,14 @@ class SMSClient:
                 logger.warning(error_msg)
                 return False, None, error_msg
 
-            message_obj = self.client.messages.create(
-                body=message,
-                from_=self.from_number,
-                to=to_number,
-            )
+            message_obj = self._create_message_with_retry(to_number, message)
             logger.info(f"SMS sent successfully. SID: {message_obj.sid}")
             return True, message_obj.sid, None
 
+        except tenacity.RetryError as re:
+            error_msg = f"Failed to send SMS after max retries due to provider errors: {str(re)}"
+            logger.error(error_msg)
+            return False, None, error_msg
         except Exception as e:
             error_msg = f"Failed to send SMS: {str(e)}"
             logger.error(error_msg)
@@ -127,6 +142,16 @@ class EmailClient:
             self.client = None
         else:
             self.client = SendGridAPIClient(self.api_key)
+
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=60),
+        stop=tenacity.stop_after_attempt(5),
+        retry=tenacity.retry_if_exception(lambda e: '503' in str(e) or '429' in str(e)),
+        reraise=True
+    )
+    def _send_email_with_retry(self, message):
+        """Internal method to send email with tenacity retry for 503/429 errors."""
+        return self.client.send(message)
 
     def send_email(self, to_email: str, subject: str, html_content: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -153,10 +178,14 @@ class EmailClient:
                 subject=subject,
                 html_content=html_content,
             )
-            response = self.client.send(message)
+            response = self._send_email_with_retry(message)
             logger.info(f"Email sent successfully. Status: {response.status_code}")
             return True, response.headers.get("X-Message-ID", "unknown"), None
 
+        except tenacity.RetryError as re:
+            error_msg = f"Failed to send email after max retries due to provider errors: {str(re)}"
+            logger.error(error_msg)
+            return False, None, error_msg
         except Exception as e:
             error_msg = f"Failed to send email: {str(e)}"
             logger.error(error_msg)
@@ -244,8 +273,18 @@ def send_email_task(
             logger.error("Failed to log background notification", error=str(e), deadline_id=deadline_id)
     
     # Handle retries if the email failed and we haven't exceeded the limit.
-    # We only retry for potentially transient errors.
-    if not success and self.request.retries < self.max_retries:
+    # Check for transient errors (503, 429) to use exponential backoff.
+    if not success and error and ('503' in str(error) or '429' in str(error)):
+        if self.request.retries < self.max_retries:
+            backoff_delay = (2 ** self.request.retries) * 60
+            logger.warning(
+                "Email delivery encountered transient error, scheduling retry with exponential backoff", 
+                error=error, 
+                retry_count=self.request.retries + 1,
+                delay_seconds=backoff_delay
+            )
+            raise self.retry(exc=Exception(error), countdown=backoff_delay)
+    elif not success and self.request.retries < self.max_retries:
         logger.warning(
             "Email delivery failed, scheduling retry", 
             error=error, 
