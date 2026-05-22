@@ -33,6 +33,7 @@ from database import (
     Attachment,
 )
 from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
+from db.repositories.case_queries import fetch_latest_documents_per_case
 from services.timeline_service import timeline_service as _timeline_service
 try:
     from celery_app import enqueue_task_from_http_request, process_case_document_upload_task
@@ -45,16 +46,7 @@ router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 logger = structlog.get_logger(__name__)
 
 
-def _get_latest_case_document(case: Case) -> CaseDocument | None:
-    if not case.documents:
-        return None
-    return max(case.documents, key=lambda document: document.uploaded_at)
-
-
 def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
-    if latest_doc is None:
-        latest_doc = _get_latest_case_document(case)
-
     return {
         "case_id": str(case.id),
         "case_number": case.case_number,
@@ -392,10 +384,9 @@ async def get_case_details(
             detail="Forbidden: You do not own this case"
         )
         
-    latest_doc = None
-    latest_doc = _get_latest_case_document(case)
+    latest_docs = fetch_latest_documents_per_case(db, [case.id])
 
-    return _build_case_summary_payload(case, latest_doc)
+    return _build_case_summary_payload(case, latest_docs.get(case.id))
 
 
 @router.post(
@@ -637,9 +628,11 @@ async def list_cases(
         .all()
     )
     
+    latest_docs = fetch_latest_documents_per_case(db, [c.id for c in cases])
+
     cases_list = []
     for c in cases:
-        cases_list.append(_build_case_summary_payload(c))
+        cases_list.append(_build_case_summary_payload(c, latest_docs.get(c.id)))
         
     return {
         "total": total,

@@ -2,7 +2,7 @@ import os
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-value-12345"
 os.environ["APP_ALLOWED_HOSTS"] = "localhost"
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -84,14 +84,22 @@ def _seed_cases(test_db):
     test_db.refresh(case_two)
     test_db.refresh(case_three)
     
-    # Document for Case One to test summary
-    doc = CaseDocument(
+    # Documents for Case One to test latest-document selection
+    older_doc = CaseDocument(
         case_id=case_one.id,
         document_type=DocumentType.JUDGMENT,
         document_content="This is the plaint content.",
-        summary="Summary of Case One Plaint",
+        summary="Older summary",
+        uploaded_at=now - timedelta(days=2),
     )
-    test_db.add(doc)
+    newer_doc = CaseDocument(
+        case_id=case_one.id,
+        document_type=DocumentType.ORDER,
+        document_content="This is the later order content.",
+        summary="Latest summary",
+        uploaded_at=now - timedelta(days=1),
+    )
+    test_db.add_all([older_doc, newer_doc])
     test_db.commit()
     
     return case_one, case_two, case_three
@@ -133,7 +141,7 @@ def test_list_cases_success(client, test_db):
     # Verify latest document summary mapping works
     for c in payload["cases"]:
         if c["case_id"] == str(case_one.id):
-            assert c["summary"] == "Summary of Case One Plaint"
+            assert c["summary"] == "Latest summary"
         else:
             assert c["summary"] == ""
 
@@ -157,7 +165,7 @@ def test_get_case_details_success(client, test_db):
     assert payload["case_id"] == str(case_one.id)
     assert payload["case_number"] == case_one.case_number
     assert payload["title"] == case_one.title
-    assert payload["summary"] == "Summary of Case One Plaint"
+    assert payload["summary"] == "Latest summary"
     assert payload["status"] == "active"
 
 

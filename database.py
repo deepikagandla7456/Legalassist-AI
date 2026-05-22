@@ -838,15 +838,20 @@ class CaseDocument(Base):
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_attachment_id = Column(Integer, ForeignKey("attachments.id", ondelete="SET NULL"), nullable=True, index=True)
     document_type = Column(SQLEnum(DocumentType), nullable=False)
     document_content = Column(Text, nullable=True)  # Extracted text from PDF
     file_path = Column(String(255), nullable=True)  # Optional: path to stored PDF
     uploaded_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     summary = Column(Text, nullable=True)  # LLM-generated 3-bullet summary
     remedies = Column(JSON, nullable=True)  # JSON: appeal info, deadlines, costs
+    extracted_metadata = Column(JSON, nullable=True)
+    extraction_method = Column(String(50), nullable=True)
+    ocr_used = Column(Boolean, default=False, nullable=False)
 
     # Relationships
     case = relationship("Case", back_populates="documents")
+    attachment = relationship("Attachment", foreign_keys=[source_attachment_id])
 
     def __repr__(self):
         return f"<CaseDocument(case_id={self.case_id}, type={self.document_type})>"
