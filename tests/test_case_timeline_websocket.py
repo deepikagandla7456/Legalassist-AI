@@ -31,7 +31,7 @@ def client():
     return TestClient(app)
 
 
-@patch("api.auth.verify_token")
+@patch("api.websockets.case_timeline._verify_token")
 def test_case_timeline_ws_requires_token(mock_verify_token, client):
     case_id = 123
     try:
@@ -43,7 +43,7 @@ def test_case_timeline_ws_requires_token(mock_verify_token, client):
         assert hasattr(e, "code") or "Authentication required" in str(e) or type(e).__name__ == "WebSocketDisconnect"
 
 
-@patch("api.auth.verify_token")
+@patch("api.websockets.case_timeline._verify_token")
 def test_case_timeline_ws_subscribed_and_forwards_event(mock_verify_token, client):
     """
     Validates:
@@ -89,3 +89,5 @@ def test_case_timeline_ws_subscribed_and_forwards_event(mock_verify_token, clien
         assert msg["description"] == "Manual deadline added"
         assert msg["metadata"]["deadline_id"] == 999
         assert msg["event_id"] == 555
+
+        websocket.close()

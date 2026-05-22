@@ -5,12 +5,14 @@ It extracts authentication handling and event forwarding into helper
 functions, making the logic testable and reusable.
 """
 
+import asyncio
+from contextlib import suppress
+
 from fastapi import FastAPI, WebSocket, Query
 from fastapi import Depends
 from api.auth import AuthError, TokenExpiredError, InvalidTokenError, verify_token as _verify_token
 from services.timeline_realtime import timeline_realtime_bus, TimelineRealtimeBus
 from typing import Optional
-import json
 
 
 def parse_auth_from_websocket(websocket: WebSocket, token: Optional[str] = None) -> Optional[str]:
@@ -40,12 +42,26 @@ async def forward_timeline_events(websocket: WebSocket, case_id: int, bus: Timel
     """
     await websocket.send_json({"type": "subscribed", "case_id": case_id})
     queue = await bus.subscribe(case_id)
+    disconnect_task = asyncio.create_task(websocket.receive())
     try:
         while True:
-            raw = await queue.get()
-            payload_obj = json.loads(raw)
+            queue_task = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait(
+                {queue_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if disconnect_task in done:
+                queue_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await queue_task
+                break
+
+            payload_obj = queue_task.result()
             await websocket.send_json(payload_obj)
     finally:
+        disconnect_task.cancel()
+        with suppress(asyncio.CancelledError, RuntimeError):
+            await disconnect_task
         await bus.unsubscribe(case_id, queue)
 
 

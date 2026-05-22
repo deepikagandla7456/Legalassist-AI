@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Dict, List, Optional
 
+from core.time_serialization import to_utc_iso
 from sqlalchemy.orm import Session
 
 from db.models import CaseDocument, CaseDeadline, CaseTimeline, NotificationLog
@@ -40,7 +41,7 @@ class TimelineService:
             "case_id": case_id,
             "event_type": event.event_type,
             "description": event.description,
-            "timestamp": event.event_date.isoformat(),
+            "timestamp": to_utc_iso(event.event_date),
             "metadata": event.event_metadata or {},
             "event_id": event.id,
         }
@@ -60,7 +61,7 @@ class TimelineService:
             {
                 "id": e.id,
                 "event_type": e.event_type,
-                "event_date": e.event_date.isoformat(),
+                "event_date": to_utc_iso(e.event_date),
                 "description": e.description,
                 "metadata": e.event_metadata,
             }
@@ -82,7 +83,7 @@ class TimelineService:
         for t in timelines:
             item = {
                 "type": t.event_type,
-                "timestamp": t.event_date.isoformat(),
+                "timestamp": to_utc_iso(t.event_date),
                 "description": t.description,
                 "metadata": t.event_metadata or {},
                 "source": "timeline",
@@ -96,14 +97,14 @@ class TimelineService:
         for d in documents:
             items.append({
                 "type": "document_uploaded",
-                "timestamp": d.uploaded_at.isoformat(),
+                "timestamp": to_utc_iso(d.uploaded_at),
                 "description": f"{d.document_type.value} uploaded",
                 "metadata": {"document_id": d.id},
                 "source": "document",
             })
 
         for d in deadlines:
-            ts = d.created_at.isoformat() if d.created_at else (d.deadline_date.isoformat() if d.deadline_date else "")
+            ts = to_utc_iso(d.created_at) if d.created_at else (to_utc_iso(d.deadline_date) if d.deadline_date else "")
             items.append({
                 "type": "deadline_created",
                 "timestamp": ts,
@@ -115,7 +116,7 @@ class TimelineService:
         for n in notifications:
             items.append({
                 "type": "reminder",
-                "timestamp": n.created_at.isoformat() if n.created_at else "",
+                "timestamp": to_utc_iso(n.created_at) if n.created_at else "",
                 "description": f"Reminder ({n.channel.value}) to {n.recipient} - {n.status.value}",
                 "metadata": {"notification_id": n.id, "deadline_id": n.deadline_id, "days_before": n.days_before},
                 "message_preview": n.message_preview,
