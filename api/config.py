@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class APISettings(BaseSettings):
@@ -177,9 +178,7 @@ class APISettings(BaseSettings):
             if not self.JWT_SECRET_KEY or self.JWT_SECRET_KEY == "your-secret-key-change-in-production":
                 raise RuntimeError("JWT_SECRET_KEY must be set to a secure value in production")
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 
 @lru_cache()
