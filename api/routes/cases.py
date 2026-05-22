@@ -31,11 +31,8 @@ from database import (
     DocumentType,
     CaseDocument,
     Attachment,
-    save_case_note_draft,
-    publish_case_note,
-    get_case_note_history,
 )
-from case_manager import upload_case_document_file
+from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
 try:
     from celery_app import enqueue_task_from_http_request, process_case_document_upload_task
 except Exception:
@@ -45,6 +42,27 @@ from analytics_engine import CaseSimilarityCalculator
 
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 logger = structlog.get_logger(__name__)
+
+
+def _get_latest_case_document(case: Case) -> CaseDocument | None:
+    if not case.documents:
+        return None
+    return max(case.documents, key=lambda document: document.uploaded_at)
+
+
+def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
+    if latest_doc is None:
+        latest_doc = _get_latest_case_document(case)
+
+    return {
+        "case_id": str(case.id),
+        "case_number": case.case_number,
+        "title": case.title or case.case_number,
+        "parties": ["Smith", "Jones"],  # Placeholder
+        "jurisdiction": case.jurisdiction,
+        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
+        "summary": latest_doc.summary if latest_doc else "",
+    }
 
 
 @router.post(
@@ -382,19 +400,9 @@ async def get_case_details(
         )
         
     latest_doc = None
-    if case.documents:
-        sorted_docs = sorted(case.documents, key=lambda d: d.uploaded_at, reverse=True)
-        latest_doc = sorted_docs[0]
-        
-    return {
-        "case_id": str(case.id),
-        "case_number": case.case_number,
-        "title": case.title or case.case_number,
-        "parties": ["Smith", "Jones"],  # Placeholder
-        "jurisdiction": case.jurisdiction,
-        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-        "summary": latest_doc.summary if latest_doc else ""
-    }
+    latest_doc = _get_latest_case_document(case)
+
+    return _build_case_summary_payload(case, latest_doc)
 
 
 @router.post(
@@ -441,6 +449,8 @@ async def upload_case_document_endpoint(
     )
     await validate_file_upload_streaming(file, max_size=ValidationConfig.MAX_UPLOAD_SIZE)
     file_bytes = await file.read()
+
+    from case_manager import upload_case_document_file
 
     stored = upload_case_document_file(
         user_id=user_id_int,
@@ -636,20 +646,7 @@ async def list_cases(
     
     cases_list = []
     for c in cases:
-        latest_doc = None
-        if c.documents:
-            sorted_docs = sorted(c.documents, key=lambda d: d.uploaded_at, reverse=True)
-            latest_doc = sorted_docs[0]
-            
-        cases_list.append({
-            "case_id": str(c.id),
-            "case_number": c.case_number,
-            "title": c.title or c.case_number,
-            "parties": ["Smith", "Jones"],  # Placeholder
-            "jurisdiction": c.jurisdiction,
-            "status": c.status.value if hasattr(c.status, 'value') else str(c.status),
-            "summary": latest_doc.summary if latest_doc else ""
-        })
+        cases_list.append(_build_case_summary_payload(c))
         
     return {
         "total": total,

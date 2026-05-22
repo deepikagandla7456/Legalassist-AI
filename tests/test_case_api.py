@@ -114,6 +114,15 @@ def test_list_cases_success(client, test_db):
     
     assert payload["total"] == 2
     assert len(payload["cases"]) == 2
+    assert all(set(case_payload) == {
+        "case_id",
+        "case_number",
+        "title",
+        "parties",
+        "jurisdiction",
+        "status",
+        "summary",
+    } for case_payload in payload["cases"])
     
     # Check that cases belong to user 42 and details are correct
     case_ids = {c["case_id"] for c in payload["cases"]}
@@ -135,6 +144,15 @@ def test_get_case_details_success(client, test_db):
     response = client.get(f"/api/v1/cases/{case_one.id}")
     assert response.status_code == 200
     payload = response.json()
+    assert set(payload) == {
+        "case_id",
+        "case_number",
+        "title",
+        "parties",
+        "jurisdiction",
+        "status",
+        "summary",
+    }
     
     assert payload["case_id"] == str(case_one.id)
     assert payload["case_number"] == case_one.case_number
