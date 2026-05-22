@@ -88,8 +88,8 @@ from database import (
     is_token_revoked,
     cleanup_expired_revoked_tokens,
     OTPVerification,
-    _get_otp_rate_limit_script,
-    _otp_rate_limit_key,
+    _get_otp_rate_limit_script as get_otp_rate_limit_script,
+    _otp_rate_limit_key as get_otp_rate_limit_key,
     User,
 )
 
@@ -163,8 +163,8 @@ def _reserve_otp_request_slot(identifier: str, window_hours: int, max_requests: 
         if recent_otps >= max_requests:
             raise ValueError("Too many OTP requests. Please try again later.")
 
-        script = _get_otp_rate_limit_script()
-        current = int(script(keys=[_otp_rate_limit_key(normalized_identifier)], args=[window_hours * 60 * 60]))
+        script = get_otp_rate_limit_script()
+        current = int(script(keys=[get_otp_rate_limit_key(normalized_identifier)], args=[window_hours * 60 * 60]))
         if current > max_requests:
             raise ValueError("Too many OTP requests. Please try again later.")
         return current
