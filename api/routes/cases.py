@@ -4,7 +4,7 @@ POST /api/v1/cases/search - Search for similar cases
 POST /api/v1/cases/similarity-feedback - Save similarity feedback
 GET /api/v1/cases/{id}/timeline - Get case timeline
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from database import (
     Attachment,
 )
 from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
+from services.timeline_service import timeline_service as _timeline_service
 try:
     from celery_app import enqueue_task_from_http_request, process_case_document_upload_task
 except Exception:
@@ -274,6 +275,41 @@ def _build_query_signature(request: CaseSearchRequest) -> str:
     return "|".join(parts)
 
 
+def _timeline_event_to_api_event(event) -> CaseEvent:
+    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+    documents = metadata.get("documents") if isinstance(metadata.get("documents"), list) else []
+    return CaseEvent(
+        date=event.event_date,
+        event_type=event.event_type,
+        description=event.description,
+        court=metadata.get("court"),
+        judge=metadata.get("judge"),
+        location=metadata.get("location"),
+        documents=documents,
+    )
+
+
+def _build_case_timeline_payload(case: Case, timeline_events) -> dict:
+    api_events = [_timeline_event_to_api_event(event) for event in timeline_events]
+    event_dates = [event.date for event in api_events]
+    if len(event_dates) >= 2:
+        duration_years = round((max(event_dates) - min(event_dates)).days / 365.25, 1)
+    else:
+        duration_years = 0.0
+
+    return {
+        "case_id": str(case.id),
+        "case_number": case.case_number,
+        "title": case.title or case.case_number,
+        "status": case.status.value if hasattr(case.status, "value") else str(case.status),
+        "created_at": case.created_at,
+        "updated_at": case.updated_at or case.created_at,
+        "events": api_events,
+        "total_events": len(api_events),
+        "duration_years": duration_years,
+    }
+
+
 
 @router.get(
     "/{case_id}/timeline",
@@ -282,74 +318,31 @@ def _build_query_signature(request: CaseSearchRequest) -> str:
 )
 async def get_case_timeline(
     case_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> CaseTimeline:
-    """Get case history and timeline"""
-    
+    """Get case history and timeline."""
     logger.info(
         "Retrieving case timeline",
         case_id=case_id,
-        user_id=current_user.user_id
+        user_id=current_user.user_id,
     )
-    
-    # Mock timeline data
-    base_date = datetime.now(timezone.utc) - timedelta(days=365)
-    events = [
-        CaseEvent(
-            date=base_date,
-            event_type="filing",
-            description="Case filed",
-            court="District Court",
-            location="New York, NY",
-            documents=["complaint.pdf"]
-        ),
-        CaseEvent(
-            date=base_date + timedelta(days=30),
-            event_type="hearing",
-            description="Initial hearing",
-            court="District Court",
-            judge="Judge Smith",
-            location="New York, NY"
-        ),
-        CaseEvent(
-            date=base_date + timedelta(days=90),
-            event_type="discovery",
-            description="Discovery period",
-            court="District Court",
-            location="New York, NY"
-        ),
-        CaseEvent(
-            date=base_date + timedelta(days=180),
-            event_type="hearing",
-            description="Motion hearing",
-            court="District Court",
-            judge="Judge Smith",
-            location="New York, NY"
-        ),
-        CaseEvent(
-            date=base_date + timedelta(days=365),
-            event_type="decision",
-            description="Court decision rendered",
-            court="District Court",
-            judge="Judge Smith",
-            location="New York, NY",
-            documents=["decision.pdf"]
-        ),
-    ]
 
-    timeline_payload = {
-        "case_id": case_id,
-        "case_number": "2023-CV-00001",
-        "title": "Example Case",
-        "status": "closed",
-        "created_at": base_date,
-        "updated_at": datetime.now(timezone.utc),
-        "events": events,
-        "total_events": len(events),
-        "duration_years": 1.0,
-    }
+    try:
+        case_id_int = int(case_id)
+        user_id_int = int(current_user.user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid case ID format")
 
-    return CaseTimeline.model_validate(timeline_payload)
+    case = db.query(Case).filter(Case.id == case_id_int).first()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    if case.user_id != user_id_int:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
+
+    timeline_events = _timeline_service.get_case_timeline(db, case_id_int)
+    return CaseTimeline.model_validate(_build_case_timeline_payload(case, timeline_events))
 
 
 @router.get(
