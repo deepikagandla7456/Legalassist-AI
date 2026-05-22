@@ -285,16 +285,27 @@ class ContextTask(Task):
 # Redis URL must be explicitly configured - no silent fallback to localhost
 _redis_env = os.getenv("REDIS_URL")
 if not _redis_env:
-    raise RuntimeError(
-        "REDIS_URL environment variable is required. "
-        "Cannot start with localhost fallback in production."
+    logger.warning(
+        "REDIS_URL not set — Celery background tasks disabled. "
+        "Set REDIS_URL to enable async task processing."
     )
-REDIS_URL = _redis_env
+    # Dummy stub so @celery_app.task decorators and .conf.update() don't crash
+    celery_app = SimpleNamespace()
+    celery_app.conf = SimpleNamespace()
+    celery_app.conf.update = lambda **kw: None
+    celery_app.conf.__setitem__ = lambda k, v: None
+    celery_app.Task = lambda: None
+    celery_app.task = lambda *args, **kwargs: (lambda f: f)
+    celery_app.AsyncResult = lambda *args, **kwargs: SimpleNamespace(state="PENDING", result=None, status="PENDING")
+    celery_app.main = "legalassist"
+    REDIS_URL = ""
+else:
+    REDIS_URL = _redis_env
 
-# Initialize the Celery application instance
-celery_app = Celery(
-    "legalassist", broker=REDIS_URL, backend=REDIS_URL, task_cls=ContextTask
-)
+    # Initialize the Celery application instance
+    celery_app = Celery(
+        "legalassist", broker=REDIS_URL, backend=REDIS_URL, task_cls=ContextTask
+    )
 
 
 # ============================================================================
