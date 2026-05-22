@@ -37,20 +37,16 @@ class TimelineService:
         # Publish realtime update to connected websocket clients (case-scoped)
         # Fire-and-forget: timeline_realtime_bus is in-memory, so async scheduling
         # keeps DB write latency low.
-        payload = {
-            "type": "timeline_event",
-            "case_id": case_id,
-            "event_type": event.event_type,
-            "description": event.description,
-            "timestamp": event.event_date,
-            "metadata": event.event_metadata or {},
-            "event_id": event.id,
-        }
-        try:
-            validated_payload = TimelineEventPayload.model_validate(payload)
-            publish_timeline_event_best_effort(validated_payload.model_dump(mode="json"))
-        except Exception:
-            pass
+        payload = TimelineEventPayload(
+            type="timeline_event",
+            case_id=case_id,
+            event_type=event.event_type,
+            description=event.description,
+            timestamp=event.event_date,
+            metadata=event.event_metadata or {},
+            event_id=event.id,
+        )
+        publish_timeline_event_best_effort(payload.model_dump(mode="json"))
 
         return event
 

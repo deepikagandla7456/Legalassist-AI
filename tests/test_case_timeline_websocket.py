@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,24 +69,33 @@ def test_case_timeline_ws_subscribed_and_forwards_event(mock_verify_token, clien
 
         # Publish directly into the realtime bus. This avoids DB/session coupling in the websocket test.
         from services.timeline_realtime import timeline_realtime_bus
-        timeline_payload = {
-            "type": "timeline_event",
-            "case_id": case_id,
-            "event_type": "deadline_created",
-            "description": "Manual deadline added",
-            "timestamp": "2023-01-01T00:00:00+00:00",
-            "metadata": {"deadline_id": 999},
-            "event_id": 555,
-        }
+        timeline_payload = TimelineEventPayload(
+            type="timeline_event",
+            case_id=case_id,
+            event_type="deadline_created",
+            description="Manual deadline added",
+            timestamp=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            metadata={"deadline_id": 999},
+            event_id=555,
+        )
 
         # timeline_realtime_bus.publish() is async; TestClient is sync,
         # so we run a short event-loop to publish.
         import asyncio
 
-        asyncio.run(timeline_realtime_bus.publish(case_id=case_id, payload=timeline_payload))
+        asyncio.run(timeline_realtime_bus.publish(case_id=case_id, payload=timeline_payload.model_dump(mode="json")))
 
         msg = websocket.receive_json()
         validated = TimelineEventPayload.model_validate(msg)
+        assert set(validated.model_dump(mode="json")) == {
+            "type",
+            "case_id",
+            "event_type",
+            "description",
+            "timestamp",
+            "metadata",
+            "event_id",
+        }
         assert validated.type == "timeline_event"
         assert validated.case_id == case_id
         assert validated.event_type == "deadline_created"
