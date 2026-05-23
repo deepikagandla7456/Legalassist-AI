@@ -13,7 +13,7 @@ def get_or_create_notification_log(
     channel: NotificationChannel,
     recipient: str,
     days_before: int,
-) -> NotificationLog:
+) -> tuple[NotificationLog, bool]:
     """Attempt to create a NotificationLog row uniquely. If another
     process created it concurrently, fetch and return the existing row.
     Raises IntegrityError only if unexpected.
@@ -30,7 +30,7 @@ def get_or_create_notification_log(
     try:
         db.flush()
         db.refresh(log)
-        return log
+        return log, True
     except IntegrityError:
         db.rollback()
         # Fetch the existing log (could be PENDING or SENT)
@@ -40,7 +40,7 @@ def get_or_create_notification_log(
             NotificationLog.channel == channel,
         ).first()
         if existing:
-            return existing
+            return existing, False
         # Re-raise if we couldn't find an existing row
         raise
 

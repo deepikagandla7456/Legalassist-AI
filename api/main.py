@@ -18,7 +18,7 @@ import structlog
 from api.config import get_settings
 from api.middlewares import register_middlewares
 from api.csrf import CSRFProtectionMiddleware
-from api.limiter import cleanup_limiter
+from api.limiter import cleanup_limiter, enforce_rate_limit, RateLimitExceeded
 from observability.integration import initialize_observability_for_environment
 from observability.instrumentation import get_metrics
 
@@ -58,7 +58,7 @@ from api.validation import (
 )
 
 # Import routes
-from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, speech, document_verification, argument_strength
+from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, speech, document_verification, argument_strength, deadline_engine, efiling
 
 settings = get_settings()
 logger = structlog.get_logger(__name__)
@@ -178,6 +178,8 @@ def create_app() -> FastAPI:
     app.include_router(speech.router)
     app.include_router(document_verification.router)
     app.include_router(argument_strength.router)
+    app.include_router(deadline_engine.router)
+    app.include_router(efiling.router)
     # Model feedback & optimization
     from api.routes import models as models_router
     app.include_router(models_router.router)
@@ -348,6 +350,21 @@ if settings.ENABLE_WEBSOCKET:
             
             if not user_id:
                 await websocket.close(code=4003, reason="Invalid token")
+                return
+
+            identifier = f"user:{user_id}"
+            if websocket.client and websocket.client.host:
+                identifier = f"{identifier}|ip:{websocket.client.host}"
+
+            try:
+                await enforce_rate_limit(
+                    identifier=identifier,
+                    endpoint=f"WS /ws/progress/{job_id}",
+                    limit=settings.WEBSOCKET_RATE_LIMIT_REQUESTS,
+                    window_seconds=settings.WEBSOCKET_RATE_LIMIT_WINDOW,
+                )
+            except RateLimitExceeded as exc:
+                await websocket.close(code=1013, reason=exc.detail["message"])
                 return
         except (TokenExpiredError, InvalidTokenError, AuthError):
             await websocket.close(code=4001, reason="Invalid or expired token")

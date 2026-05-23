@@ -14,6 +14,7 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from api.config import get_settings
+from api.errors import StructuredAPIError, structured_error_response
 from api.middlewares.idempotency import http_idempotency_manager, idempotency_middleware, is_safe_to_cache
 from api.middlewares.rate_limit import rate_limit_middleware
 from api.middlewares.request_size import request_size_limit_middleware
@@ -97,18 +98,6 @@ async def logging_middleware(request: Request, call_next: Callable):
 
     if apply_rls_context and _is_postgres and user_id_attr not in (None, "anonymous", ""):
         request.state.db_rls_user_id = user_id_attr
-
-    if _csrf_validate and request.method not in {"GET", "HEAD", "OPTIONS"}:
-        try:
-            user_id_int = int(user_id_attr) if str(user_id_attr).isdigit() else None
-            if user_id_int:
-                _csrf_validate(request, current_user_id=user_id_int, allowed_hosts=None)
-        except Exception as exc:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=403,
-                content={"detail": getattr(exc, "detail", "CSRF validation failed")},
-            )
 
     response = None
     error_occurred = False

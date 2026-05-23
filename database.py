@@ -9,6 +9,7 @@ from __future__ import annotations
 import enum
 import logging
 from contextlib import contextmanager
+
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -29,6 +30,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from config import Config
+from db.models import CaseNote
+from db.case_service import save_case_note_draft
 from db.attachments_service import create_attachment, get_attachments_for_case
 from db.otp_service import (
     _otp_rate_limit_key,
@@ -193,6 +196,7 @@ class NotificationChannel(str, enum.Enum):
 class CaseDeadline(Base):
     """Model for case deadlines"""
     __tablename__ = "case_deadlines"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
@@ -226,6 +230,7 @@ class CaseDeadline(Base):
 class UserPreference(Base):
     """Model for user notification preferences"""
     __tablename__ = "user_preferences"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
@@ -259,6 +264,7 @@ class UserPreference(Base):
 class NotificationLog(Base):
     """Model for tracking sent notifications"""
     __tablename__ = "notification_logs"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     deadline_id = Column(Integer, ForeignKey("case_deadlines.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -284,6 +290,7 @@ class NotificationLog(Base):
 class CaseRecord(Base):
     """Model for tracking individual case records (anonymized)"""
     __tablename__ = "case_records"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     hashed_case_id = Column(String(255), unique=True, nullable=False, index=True)  # Hashed ID for privacy
@@ -309,6 +316,7 @@ class CaseRecord(Base):
 class CaseOutcome(Base):
     """Model for tracking appeal outcomes and follow-ups"""
     __tablename__ = "case_outcomes"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("case_records.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
@@ -332,6 +340,7 @@ class CaseOutcome(Base):
 class CaseAnalytics(Base):
     """Model for aggregated analytics (refreshed periodically)"""
     __tablename__ = "case_analytics"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_type = Column(String(255), nullable=False)  # civil, criminal, etc.
@@ -362,6 +371,7 @@ class CaseAnalytics(Base):
 class NotificationTemplate(Base):
     """Per-user notification templates for SMS and Email"""
     __tablename__ = "notification_templates"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
@@ -379,6 +389,7 @@ class NotificationTemplate(Base):
 class UserFeedback(Base):
     """Model for tracking user feedback on case outcomes"""
     __tablename__ = "user_feedback"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -405,6 +416,7 @@ class UserFeedback(Base):
 class ModelFeedback(Base):
     """User feedback on model outputs for later training and evaluation"""
     __tablename__ = "model_feedback"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False, index=True)
@@ -425,6 +437,7 @@ class ModelFeedback(Base):
 class ModelPerformance(Base):
     """Aggregated model performance metrics (materialized/updated periodically)"""
     __tablename__ = "model_performance"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     model_name = Column(String(255), nullable=False, index=True)
@@ -445,6 +458,7 @@ class ModelPerformance(Base):
 class ModelRoutingRule(Base):
     """Rule for routing tasks to specific models based on case attributes"""
     __tablename__ = "model_routing_rule"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
@@ -463,6 +477,7 @@ class ModelRoutingRule(Base):
 class SimilarityFeedback(Base):
     """Model for tracking similarity search relevance feedback"""
     __tablename__ = "similarity_feedback"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False, index=True)
@@ -572,6 +587,7 @@ class User(Base):
     
     __table_args__ = (
         Index("ix_users_email", "email"),
+        {"extend_existing": True},
     )
 
     # -------------------------------------------------------------------------
@@ -754,6 +770,7 @@ class User(Base):
 class OTPVerification(Base):
     """Model for storing email OTP codes for authentication"""
     __tablename__ = "otp_verifications"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     email = Column(String(255), nullable=False, index=True)
@@ -785,6 +802,7 @@ class OTPVerification(Base):
 class RevokedToken(Base):
     """Model for storing revoked JWT tokens (logout blacklist)"""
     __tablename__ = "revoked_tokens"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     jti = Column(String(255), unique=True, nullable=False, index=True)  # JWT ID
@@ -816,7 +834,7 @@ class DocumentType(str, enum.Enum):
 class Case(Base):
     """Model for tracking user cases"""
     __tablename__ = "cases"
-    __table_args__ = (UniqueConstraint("user_id", "case_number", name="uq_user_case_number"),)
+    __table_args__ = (UniqueConstraint("user_id", "case_number", name="uq_user_case_number"), {"extend_existing": True})
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -848,6 +866,7 @@ class Case(Base):
 class CaseDocument(Base):
     """Model for storing documents uploaded for a case"""
     __tablename__ = "case_documents"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -873,6 +892,7 @@ class CaseDocument(Base):
 class Attachment(Base):
     """Model for storing uploaded attachments/evidence linked to cases or deadlines"""
     __tablename__ = "attachments"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -895,6 +915,7 @@ class Attachment(Base):
 class CaseTimeline(Base):
     """Model for tracking timeline events in a case"""
     __tablename__ = "case_timeline"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -914,6 +935,7 @@ class CaseTimeline(Base):
 class CaseComment(Base):
     """Threaded collaboration comment attached to a case."""
     __tablename__ = "case_comments"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -936,6 +958,7 @@ class CaseComment(Base):
 class CasePresence(Base):
     """Tracks recently active collaborators on a case."""
     __tablename__ = "case_presence"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -949,7 +972,7 @@ class CasePresence(Base):
     case = relationship("Case", back_populates="presence_updates")
     user = relationship("User", back_populates="case_presence")
 
-    __table_args__ = (UniqueConstraint("case_id", "user_id", name="uq_case_presence_user"),)
+    __table_args__ = (UniqueConstraint("case_id", "user_id", name="uq_case_presence_user"), {"extend_existing": True})
 
     def __repr__(self):
         return f"<CasePresence(case_id={self.case_id}, user_id={self.user_id}, last_seen={self.last_seen})>"
@@ -961,6 +984,7 @@ class CasePresence(Base):
 class CaseEmbedding(Base):
     """Model for storing semantic embeddings of cases for similarity search"""
     __tablename__ = "case_embeddings"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
@@ -991,6 +1015,7 @@ class CaseEmbedding(Base):
 class CaseIssue(Base):
     """Model for tracking legal issues/topics extracted from cases"""
     __tablename__ = "case_issues"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1015,7 +1040,7 @@ class CaseIssue(Base):
     document = relationship("CaseDocument")
     arguments = relationship("CaseArgument", back_populates="issue", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("case_id", "issue_name", name="uq_case_issue"),)
+    __table_args__ = (UniqueConstraint("case_id", "issue_name", name="uq_case_issue"), {"extend_existing": True})
 
     def __repr__(self):
         return f"<CaseIssue(case_id={self.case_id}, issue={self.issue_name})>"
@@ -1024,6 +1049,7 @@ class CaseIssue(Base):
 class CaseArgument(Base):
     """Model for tracking legal arguments used in cases"""
     __tablename__ = "case_arguments"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     case_id = Column(Integer, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1053,6 +1079,7 @@ class CaseArgument(Base):
 class KnowledgeGraphEdge(Base):
     """Model for building a knowledge graph: Case → Issue → Argument → Outcome"""
     __tablename__ = "knowledge_graph_edges"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     
@@ -1077,7 +1104,7 @@ class KnowledgeGraphEdge(Base):
     argument = relationship("CaseArgument")
     case = relationship("Case")
 
-    __table_args__ = (UniqueConstraint("issue_id", "argument_id", "case_id", name="uq_graph_edge"),)
+    __table_args__ = (UniqueConstraint("issue_id", "argument_id", "case_id", name="uq_graph_edge"), {"extend_existing": True})
 
     def __repr__(self):
         return f"<KnowledgeGraphEdge(issue={self.issue_id}, argument={self.argument_id}, outcome={self.outcome})>"
@@ -1086,6 +1113,7 @@ class KnowledgeGraphEdge(Base):
 class PrecedentMatch(Base):
     """Model for storing precedent matching results for quick lookup"""
     __tablename__ = "precedent_matches"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     
@@ -1116,7 +1144,7 @@ class PrecedentMatch(Base):
     query_case = relationship("Case", foreign_keys=[query_case_id])
     precedent_case = relationship("Case", foreign_keys=[precedent_case_id])
 
-    __table_args__ = (UniqueConstraint("query_case_id", "precedent_case_id", "match_type", name="uq_precedent_match"),)
+    __table_args__ = (UniqueConstraint("query_case_id", "precedent_case_id", "match_type", name="uq_precedent_match"), {"extend_existing": True})
 
     def __repr__(self):
         return f"<PrecedentMatch(query={self.query_case_id}, precedent={self.precedent_case_id}, type={self.match_type})>"
@@ -1493,6 +1521,30 @@ def submit_model_feedback(
 def aggregate_model_performance(db: Session, task: Optional[str] = None) -> List[ModelPerformance]:
     """Compute simple model performance aggregates from `model_feedback` rows."""
     return []
+
+
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    """Get a user by email address."""
+    return db.query(User).filter(User.email == email).first()
+
+
+def create_user(db: Session, email: str) -> User:
+    """Create a new user."""
+    user = User(email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
+    """Update a user's last-login timestamp."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.last_login = dt.datetime.now(dt.timezone.utc)
+        db.commit()
+        db.refresh(user)
+    return user
 
 
 def schedule_token_cleanup():

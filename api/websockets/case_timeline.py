@@ -7,13 +7,57 @@ functions, making the logic testable and reusable.
 
 import asyncio
 from contextlib import suppress
+from typing import Optional
 
+import jwt
 from fastapi import FastAPI, WebSocket, Query
 from fastapi import Depends
-from api.auth import AuthError, TokenExpiredError, InvalidTokenError, verify_token as _verify_token
+from api.config import get_settings
+from api.limiter import enforce_rate_limit, RateLimitExceeded
 from core.timeline_payloads import TimelineEventPayload
+from db.models.cases import Case
+from db.session import get_db
 from services.timeline_realtime import timeline_realtime_bus, TimelineRealtimeBus
-from typing import Optional
+from sqlalchemy.orm import Session
+
+
+settings = get_settings()
+
+
+class TokenExpiredError(Exception):
+    pass
+
+
+class InvalidTokenError(Exception):
+    pass
+
+
+class AuthError(Exception):
+    pass
+
+
+def _verify_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "type"], "verify_nbf": True},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenExpiredError("Token has expired") from exc
+    except jwt.InvalidIssuerError as exc:
+        raise InvalidTokenError("Invalid token issuer") from exc
+    except jwt.InvalidAudienceError as exc:
+        raise InvalidTokenError("Invalid token audience") from exc
+    except jwt.InvalidTokenError as exc:
+        raise InvalidTokenError("Invalid token") from exc
+
+    if payload.get("type") != "access":
+        raise InvalidTokenError("Invalid token type")
+    return payload
 
 
 def parse_auth_from_websocket(websocket: WebSocket, token: Optional[str] = None) -> Optional[str]:
@@ -66,6 +110,16 @@ async def forward_timeline_events(websocket: WebSocket, case_id: int, bus: Timel
         await bus.unsubscribe(case_id, queue)
 
 
+def _require_owned_case(case_id: int, user_id: str, db: Session) -> bool:
+    try:
+        owner_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    case = db.query(Case).filter(Case.id == case_id, Case.user_id == owner_id).first()
+    return case is not None
+
+
 def register_case_timeline_endpoint(app: FastAPI) -> None:
     """Register the ``/ws/cases/{case_id}/timeline`` endpoint on the given app.
     """
@@ -75,6 +129,7 @@ def register_case_timeline_endpoint(app: FastAPI) -> None:
         websocket: WebSocket,
         case_id: int,
         token: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
     ):
         # Authentication
         auth_token = parse_auth_from_websocket(websocket, token)
@@ -89,6 +144,25 @@ def register_case_timeline_endpoint(app: FastAPI) -> None:
                 return
         except (TokenExpiredError, InvalidTokenError, AuthError):
             await websocket.close(code=4001, reason="Invalid or expired token")
+            return
+
+        if not _require_owned_case(case_id, user_id, db):
+            await websocket.close(code=1008, reason="Forbidden: You do not own this case")
+            return
+
+        identifier = f"user:{user_id}"
+        if websocket.client and websocket.client.host:
+            identifier = f"{identifier}|ip:{websocket.client.host}"
+
+        try:
+            await enforce_rate_limit(
+                identifier=identifier,
+                endpoint=f"WS /ws/cases/{case_id}/timeline",
+                limit=settings.WEBSOCKET_RATE_LIMIT_REQUESTS,
+                window_seconds=settings.WEBSOCKET_RATE_LIMIT_WINDOW,
+            )
+        except RateLimitExceeded as exc:
+            await websocket.close(code=1013, reason=exc.detail["message"])
             return
 
         # Subprotocol handling

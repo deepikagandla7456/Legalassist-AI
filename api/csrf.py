@@ -19,11 +19,14 @@ from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from api.errors import StructuredAPIError, structured_error_response
+
 logger = structlog.get_logger(__name__)
 
 SAFE_METHODS: Set[str] = {"GET", "HEAD", "OPTIONS"}
 CSRF_TOKEN_HEADER = "X-CSRF-Token"
 CSRF_COOKIE_NAME = "csrf_token"
+ACCESS_TOKEN_COOKIE_NAME = "access_token"
 CSRF_SESSION_PREFIX = "csrf_session:"
 
 
@@ -98,31 +101,45 @@ def validate_csrf(
     origin = get_origin(request)
     if origin and not is_same_origin(request, allowed_hosts):
         logger.warning("csrf_cross_origin_rejected", origin=origin, path=str(request.url.path))
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cross-origin request blocked",
-        )
+        raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_ORIGIN_BLOCKED", message="Cross-origin request blocked")
 
+    access_token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
     header_token = request.headers.get(CSRF_TOKEN_HEADER) or request.headers.get(CSRF_TOKEN_HEADER.lower())
 
-    if current_user_id and cookie_token:
+    if not access_token and not cookie_token:
+        return
+
+    if not access_token:
         if not header_token:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing CSRF token. Include '{CSRF_TOKEN_HEADER}' header.",
-            )
-        if not validate_csrf_token(header_token, current_user_id):
-            logger.warning("csrf_token_invalid", path=str(request.url.path), user_id=current_user_id)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or expired CSRF token",
-            )
-        if not hmac.compare_digest(header_token, cookie_token):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="CSRF token mismatch",
-            )
+            raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_MISSING_TOKEN", message=f"Missing CSRF token. Include '{CSRF_TOKEN_HEADER}' header.")
+        if not hmac.compare_digest(header_token, cookie_token or ""):
+            raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_TOKEN_MISMATCH", message="CSRF token mismatch")
+        return
+
+    if current_user_id is None:
+        from api.jwt_auth import InvalidTokenError, TokenExpiredError, verify_token
+
+        try:
+            payload = verify_token(access_token)
+            current_user_id = int(payload.get("sub"))
+        except TokenExpiredError as exc:
+            raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="TOKEN_EXPIRED", message=str(exc))
+        except (InvalidTokenError, TypeError, ValueError):
+            raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="INVALID_TOKEN", message="Invalid token")
+
+    if not cookie_token:
+        raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_MISSING_COOKIE", message="Missing CSRF cookie")
+
+    if not header_token:
+        raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_MISSING_TOKEN", message=f"Missing CSRF token. Include '{CSRF_TOKEN_HEADER}' header.")
+
+    if not validate_csrf_token(header_token, current_user_id):
+        logger.warning("csrf_token_invalid", path=str(request.url.path), user_id=current_user_id)
+        raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_TOKEN_INVALID", message="Invalid or expired CSRF token")
+
+    if not hmac.compare_digest(header_token, cookie_token):
+        raise StructuredAPIError(status_code=status.HTTP_403_FORBIDDEN, error_code="CSRF_TOKEN_MISMATCH", message="CSRF token mismatch")
 
 
 class CSRFProtectionMiddleware(BaseHTTPMiddleware):
@@ -147,24 +164,61 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
         if path in self.exempt_paths:
             return await call_next(request)
 
+        if request.method not in SAFE_METHODS:
+            try:
+                validate_csrf(request, allowed_hosts=self.allowed_hosts)
+            except StructuredAPIError as exc:
+                return structured_error_response(
+                    status_code=exc.status_code,
+                    error_code=exc.error_code,
+                    message=exc.message,
+                    request=request,
+                )
+
         user_id = getattr(request.state, "csrf_user_id", None)
         response = await call_next(request)
 
-        if request.method not in SAFE_METHODS and user_id:
-            token = generate_csrf_token(user_id, getattr(request.state, "request_id", "default"))
-            try:
-                secure = True
-            except Exception:
-                secure = False
+        access_token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+
+        if request.method in SAFE_METHODS and not csrf_cookie:
+            token = generate_csrf_token(int(user_id) if str(user_id).isdigit() else 0, getattr(request.state, "request_id", "bootstrap"))
             response.set_cookie(
                 CSRF_COOKIE_NAME,
                 token,
                 httponly=False,
                 samesite="lax",
-                secure=secure,
+                secure=True,
                 path="/",
                 max_age=3600 * 8,
             )
             response.headers["X-CSRF-Token"] = token
+            return response
+
+        if request.method not in SAFE_METHODS and (user_id or access_token):
+            resolved_user_id = int(user_id) if str(user_id).isdigit() else None
+            if resolved_user_id is None and access_token:
+                try:
+                    payload = verify_token(access_token)
+                    resolved_user_id = int(payload.get("sub"))
+                except Exception:
+                    resolved_user_id = None
+
+            if resolved_user_id is not None:
+                token = generate_csrf_token(resolved_user_id, getattr(request.state, "request_id", "default"))
+                response.set_cookie(
+                    CSRF_COOKIE_NAME,
+                    token,
+                    httponly=False,
+                    samesite="lax",
+                    secure=True,
+                    path="/",
+                    max_age=3600 * 8,
+                )
+                response.headers["X-CSRF-Token"] = token
 
         return response
+
+
+CSRFError = StructuredAPIError
+validate_csrf_request = validate_csrf

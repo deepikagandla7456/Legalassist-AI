@@ -16,12 +16,12 @@ from api.csrf import (
     CSRFProtectionMiddleware,
     CSRF_COOKIE_NAME,
     CSRF_TOKEN_HEADER,
-    CSRFError,
-    validate_csrf_request,
 )
+from api.errors import register_structured_error_handlers
 
 # Create a clean, isolated FastAPI app for testing CSRF middleware
 app = FastAPI()
+register_structured_error_handlers(app)
 app.add_middleware(
     CSRFProtectionMiddleware,
     allowed_hosts={"testserver", "localhost"},
@@ -53,9 +53,10 @@ def test_post_without_origin_bypasses_csrf():
     assert response.status_code == 200
     assert response.json() == {"message": "success"}
 
-def test_post_with_origin_but_no_cookie_or_header_fails():
-    """Test that a state-mutating request with an Origin header but no CSRF cookie/header fails with 403."""
+def test_post_with_cookie_auth_but_no_csrf_fails():
+    """Test that cookie-authenticated unsafe requests require a CSRF token."""
     client.cookies.clear()
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-cookie-token")
     response = client.post("/test-post", headers={"Origin": "http://localhost"})
     assert response.status_code == 403
     payload = response.json()
@@ -63,22 +64,19 @@ def test_post_with_origin_but_no_cookie_or_header_fails():
     assert "Missing CSRF token" in payload["message"]
     assert payload["request_id"]
 
-def test_post_with_origin_and_header_but_no_cookie_fails():
-    """Test that a request with header but no cookie fails."""
+def test_post_with_header_only_bypasses_csrf():
+    """Test that a header-only request without cookies bypasses CSRF checks."""
     client.cookies.clear()
     headers = {
         "Origin": "http://localhost",
         "X-CSRF-Token": "some-token",
     }
     response = client.post("/test-post", headers=headers)
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error_code"] == "CSRF_MISSING_COOKIE"
-    assert "Missing CSRF cookie" in payload["message"]
-    assert payload["request_id"]
+    assert response.status_code == 200
+    assert response.json() == {"message": "success"}
 
-def test_post_with_origin_and_mismatched_tokens_fails():
-    """Test that mismatched cookie and header values fail."""
+def test_post_with_cookie_auth_and_mismatched_tokens_fails():
+    """Test that mismatched cookie and header values fail for cookie-authenticated requests."""
     client.cookies.clear()
     headers = {
         "Origin": "http://localhost",
@@ -94,7 +92,7 @@ def test_post_with_origin_and_mismatched_tokens_fails():
     client.cookies.clear()
 
 def test_post_with_matching_tokens_succeeds():
-    """Test that matching cookie and header values succeed."""
+    """Test that matching cookie and header values succeed for cookie-authenticated requests."""
     client.cookies.clear()
     token = "valid-csrf-token"
     headers = {

@@ -54,12 +54,17 @@ class APISettings(BaseSettings):
     AUTH_RATE_LIMIT_REQUESTS: int = 5  # tight limit for login
     AUTH_RATE_LIMIT_WINDOW: int = 60   # per minute
     AUTH_RATE_LIMIT_STRATEGY: str = "fixed-window"  # or 'sliding-window'
+
+    # WebSocket Rate Limiting
+    WEBSOCKET_RATE_LIMIT_REQUESTS: int = 20
+    WEBSOCKET_RATE_LIMIT_WINDOW: int = 60
     
     # Authentication
     AUTH_ENABLED: bool = True
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET", os.getenv("JWT_SECRET_KEY", ""))
     JWT_SECRET_KEY_PREVIOUS: str = os.getenv("JWT_SECRET_PREVIOUS", os.getenv("JWT_SECRET_KEY_PREVIOUS", ""))
     JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_MINUTES: int = 15
     JWT_EXPIRATION_HOURS: int = 24
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "legalassist.ai")
     JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "legalassist-users")
