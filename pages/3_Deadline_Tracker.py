@@ -33,10 +33,14 @@ def get_all_user_deadlines(user_id: int) -> List[Dict[str, Any]]:
             CaseDeadline.user_id == user_id
         ).order_by(CaseDeadline.deadline_date).all()
 
+        # Single batch query for all related cases (eliminates N+1)
+        case_ids = {d.case_id for d in deadlines}
+        cases = db.query(Case).filter(Case.id.in_(case_ids)).all()
+        case_map = {c.id: c for c in cases}
+
         result = []
         for d in deadlines:
-            # Get case info
-            case = db.query(Case).filter(Case.id == d.case_id).first()
+            case = case_map.get(d.case_id)
 
             result.append({
                 "id": d.id,
