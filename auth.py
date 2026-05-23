@@ -88,8 +88,6 @@ from database import (
     is_token_revoked,
     cleanup_expired_revoked_tokens,
     OTPVerification,
-    _get_otp_rate_limit_script as get_otp_rate_limit_script,
-    _otp_rate_limit_key as get_otp_rate_limit_key,
     User,
 )
 
@@ -136,40 +134,6 @@ def _hash_otp(otp: str) -> str:
 def _verify_otp_hash(otp: str, otp_hash: str) -> bool:
     """Verify OTP against stored hash"""
     return _hash_otp(otp) == otp_hash
-
-
-def _otp_rate_limit_keys(email: str, requester_ip: Optional[str] = None) -> list[str]:
-    keys = [f"email:{str(email).strip().lower()}"]
-    if requester_ip:
-        keys.append(f"ip:{str(requester_ip).strip().lower()}")
-    return keys
-
-
-def _reserve_otp_request_slot(identifier: str, window_hours: int, max_requests: int) -> int:
-    normalized_identifier = str(identifier).strip().lower()
-    if not normalized_identifier:
-        raise ValueError("OTP request identifier is required")
-
-    now = datetime.now(timezone.utc)
-    rate_limit_start = now - timedelta(hours=window_hours)
-
-    db = SessionLocal()
-    try:
-        recent_otps = db.query(OTPVerification).filter(
-            OTPVerification.email == normalized_identifier,
-            OTPVerification.created_at >= rate_limit_start,
-        ).count()
-
-        if recent_otps >= max_requests:
-            raise ValueError("Too many OTP requests. Please try again later.")
-
-        script = get_otp_rate_limit_script()
-        current = int(script(keys=[get_otp_rate_limit_key(normalized_identifier)], args=[window_hours * 60 * 60]))
-        if current > max_requests:
-            raise ValueError("Too many OTP requests. Please try again later.")
-        return current
-    finally:
-        db.close()
 
 
 def generate_otp() -> str:
