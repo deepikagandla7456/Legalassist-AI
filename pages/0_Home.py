@@ -335,25 +335,27 @@ def render_page():
                                 from database import SessionLocal
 
                                 db = SessionLocal()
-                                summary_data = AnalyticsAggregator.get_dashboard_summary(db)
-
-                                if summary_data.get("total_cases_processed", 0) > 0:
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.metric(ui["total_cases_tracked"], summary_data["total_cases_processed"])
-                                    with col2:
-                                        trends = AnalyticsAggregator.get_regional_trends(db)
-                                        success_rate = trends[0]['appeal_success_rate'] if trends else 'N/A'
-                                        st.metric(ui["appeals_success_rate"], f"{success_rate}%")
-                                    with col3:
-                                        st.metric(ui["appeals_filed"], summary_data.get("appeals_filed", 0))
-                                    st.write(f"📌 **{ui['analytics_link_text']}**")
-                                else:
-                                    st.info(ui["analytics_empty"])
-
-                                db.close()
                             except Exception as e:
                                 st.info(ui["analytics_not_ready"])
+                            else:
+                                try:
+                                    summary_data = AnalyticsAggregator.get_dashboard_summary(db)
+
+                                    if summary_data.get("total_cases_processed", 0) > 0:
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric(ui["total_cases_tracked"], summary_data["total_cases_processed"])
+                                        with col2:
+                                            trends = AnalyticsAggregator.get_regional_trends(db)
+                                            success_rate = trends[0]['appeal_success_rate'] if trends else 'N/A'
+                                            st.metric(ui["appeals_success_rate"], f"{success_rate}%")
+                                        with col3:
+                                            st.metric(ui["appeals_filed"], summary_data.get("appeals_filed", 0))
+                                        st.write(f"📌 **{ui['analytics_link_text']}**")
+                                    else:
+                                        st.info(ui["analytics_empty"])
+                                finally:
+                                    db.close()
 
                         # ===== FREE LEGAL HELP SECTION =====
                         st.markdown("---")

@@ -93,17 +93,16 @@ def create_new_case(
     """
     db = SessionLocal()
     try:
-        # Normalize inputs by trimming whitespace
-        case_number = case_number.strip()
-        jurisdiction = jurisdiction.strip()
         case_type = case_type.strip()
+        jurisdiction = jurisdiction.strip()
         if title:
             title = title.strip()
         
         # Check if case number already exists for this user
+        normalized_number = case_number.strip()
         existing = db.query(Case).filter(
             Case.user_id == user_id,
-            Case.case_number == case_number,
+            Case.case_number == normalized_number,
         ).first()
 
         if existing:

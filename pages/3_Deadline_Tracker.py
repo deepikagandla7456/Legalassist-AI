@@ -313,6 +313,26 @@ def render_upcoming_section(deadlines: List[Dict]):
             st.markdown("---")
 
 
+def _escape_ics(text: str) -> str:
+    """Escape \, \; \, and newlines for RFC 5545 compliance."""
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _fold_ics_line(line: str, maxlen: int = 75) -> str:
+    """Fold long ICS lines per RFC 5545 (max 75 octets, continuation with leading space)."""
+    if len(line.encode("utf-8")) <= maxlen:
+        return line
+    folded = []
+    while len(line.encode("utf-8")) > maxlen:
+        cut = maxlen
+        while cut > 0 and line[cut - 1:cut].encode("utf-8").startswith(b"\x80"):
+            cut -= 1
+        folded.append(line[:cut])
+        line = " " + line[cut:]
+    folded.append(line)
+    return "\r\n ".join(folded)
+
+
 def main():
     """Main deadline tracker logic"""
     # Require authentication
@@ -397,15 +417,17 @@ def main():
 
             for d in pending:
                 deadline_dt = d["deadline_date"]
-                deadline_end = deadline_dt + timedelta(days=1)
+                summary = _escape_ics(f"[LegalAssist] {d['deadline_type'].title()} - {d['case_title']}")
+                description = _escape_ics(d.get("description", ""))
                 ics_lines.extend([
-                    "BEGIN:VEVENT",
-                    f"UID:deadline-{d['id']}@legalassist.ai",
-                    f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
-                    f"DTSTART;VALUE=DATE:{deadline_dt.strftime('%Y%m%d')}",
-                    f"DTEND;VALUE=DATE:{deadline_end.strftime('%Y%m%d')}",
-                    f"SUMMARY:[LegalAssist] {d['deadline_type'].title()} - {d['case_title']}",
-                    f"DESCRIPTION:{d.get('description', '')}",
+                    _fold_ics_line("BEGIN:VEVENT"),
+                    _fold_ics_line(f"UID:deadline-{d['id']}@legalassist.ai"),
+                    _fold_ics_line(f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"),
+                    _fold_ics_line(f"DTSTART:{deadline_dt.strftime('%Y%m%d')}T090000"),
+                    _fold_ics_line("DURATION:PT1H"),
+                    _fold_ics_line(f"SUMMARY:{summary}"),
+                    _fold_ics_line(f"DESCRIPTION:{description}"),
+                    "SEQUENCE:0",
                     "STATUS:CONFIRMED",
                     "END:VEVENT",
                 ])

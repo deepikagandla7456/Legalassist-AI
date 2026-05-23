@@ -211,7 +211,7 @@ def render_remedies_section(remedies):
         logging.exception("Remedies rendering failed")
 
 
-def render_save_to_case_section(user_id, raw_text, summary, remedies):
+def render_save_to_case_section(raw_text, summary, remedies):
     """
     Renders the UI for saving the current analysis to a user's case history.
     """
@@ -224,6 +224,7 @@ def render_save_to_case_section(user_id, raw_text, summary, remedies):
             st.switch_page(routes.PAGE_LOGIN)
         return
 
+    user_id = get_current_user_id()
     cases = get_user_cases_summary(user_id, include_closed=False)
     
     col1, col2 = st.columns(2)
@@ -821,74 +822,7 @@ def main():
                     except Exception as e:
                         st.error(f"{ui['remedies_error']}: {str(e)}")
                     
-                    # ===== SAVE TO CASE SECTION =====
-                    st.markdown("---")
-                    st.markdown("## 💾 Save to Case History")
-                    
-                    if not require_auth():
-                        st.info("Log in to save this document, track deadlines, and view timeline history.")
-                        if st.button("Go to Login", key="login_to_save"):
-                            st.switch_page(routes.PAGE_LOGIN)
-                    else:
-                        user_id = get_current_user_id()
-                        cases = get_user_cases_summary(user_id, include_closed=False)
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if cases:
-                                case_options = {f"{c['case_number']} - {c['title']}": c['id'] for c in cases}
-                                selected_case_name = st.selectbox("Select Existing Case", options=list(case_options.keys()))
-                                selected_case_id = case_options[selected_case_name]
-                                
-                                if st.button("Save to Selected Case"):
-                                    with st.spinner("Saving..."):
-                                        doc = upload_case_document(
-                                            user_id=user_id,
-                                            case_id=selected_case_id,
-                                            document_type=DocumentType.JUDGMENT,
-                                            document_content=raw_text,
-                                            summary=summary,
-                                            remedies=remedies
-                                        )
-                                        if doc:
-                                            st.success("✅ Saved successfully! Deadlines auto-created.")
-                                            st.session_state.selected_case_id = selected_case_id
-                            else:
-                                st.info("No active cases found. Create one to the right.")
-
-                            if st.session_state.get("selected_case_id"):
-                                if st.button("View Case Details", key="view_existing_case"):
-                                    st.switch_page(routes.PAGE_CASE_DETAILS)
-
-                        with col2:
-                            with st.expander("➕ Or Create New Case"):
-                                new_case_number = st.text_input("Case Number").strip()
-                                new_case_title = st.text_input("Case Title (Optional)").strip()
-                                new_case_type = st.selectbox("Type", ["civil", "criminal", "family", "other"])
-                                new_jurisdiction = st.text_input("Jurisdiction", placeholder="e.g. Delhi High Court").strip()
-                                if st.button("Create & Save"):
-                                    if new_case_number and new_jurisdiction:
-                                        new_case, was_existing = create_new_case(
-                                            user_id=user_id,
-                                            case_number=new_case_number,
-                                            case_type=new_case_type,
-                                            jurisdiction=new_jurisdiction,
-                                            title=new_case_title
-                                        )
-                                        if was_existing:
-                                            st.warning("Case already exists. Document will be added to existing case.")
-                                        if new_case:
-                                            doc = upload_case_document(
-                                                user_id=user_id,
-                                                case_id=new_case.id,
-                                                document_type=DocumentType.JUDGMENT,
-                                                document_content=raw_text,
-                                                summary=summary,
-                                                remedies=remedies
-                                            )
-                                            if doc:
-                                                st.success("✅ Case created and document saved!")
-                                                st.session_state.selected_case_id = new_case.id
+                    render_save_to_case_section(raw_text, summary, remedies)
 
                     st.markdown("---")
                     st.markdown("## 📊 Track Your Case & See Statistics")

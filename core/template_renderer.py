@@ -1,5 +1,9 @@
 from string import Formatter
 from typing import Dict, Set, Tuple, List
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_VARS: Set[str] = {
@@ -62,6 +66,7 @@ def render_template(template: str, values: Dict[str, str], allowed: Set[str] = A
     try:
         rendered = template.format_map(safe_map)
     except Exception as e:
+        logger.exception("Failed to render template with values=%s", safe_map)
         raise TemplateValidationError(f"Failed to render template: {e}") from e
 
     return rendered
