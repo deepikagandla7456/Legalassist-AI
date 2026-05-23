@@ -69,7 +69,7 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    if case.user_id != user_id_int:
+    if current_user.role != "admin" and case.user_id != user_id_int:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
 
     return case

@@ -5,13 +5,61 @@ GET /api/v1/deadlines/{deadline_id} - Get deadline details
 POST /api/v1/deadlines - Create new deadline
 """
 from fastapi import APIRouter, HTTPException, status, Depends
+from sqlalchemy.orm import Session
 from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from database import Case, CaseDeadline, get_db
 
 router = APIRouter(prefix="/api/v1/deadlines", tags=["deadlines"])
 logger = structlog.get_logger(__name__)
+
+
+def _deadline_priority(days_until_due: int) -> str:
+    if days_until_due <= 3:
+        return "critical"
+    if days_until_due <= 10:
+        return "high"
+    if days_until_due <= 30:
+        return "medium"
+    return "low"
+
+
+def _require_owned_case(case_id: str | None, current_user: CurrentUser, db: Session) -> Case | None:
+    if case_id is None:
+        return None
+
+    try:
+        case_id_int = int(case_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid case ID format")
+
+    case = db.query(Case).filter(Case.id == case_id_int).first()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    if current_user.role != "admin" and case.user_id != current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    return case
+
+
+def _require_owned_deadline(deadline_id: str, current_user: CurrentUser, db: Session) -> CaseDeadline:
+    try:
+        deadline_id_int = int(deadline_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deadline ID format")
+
+    deadline = db.query(CaseDeadline).filter(CaseDeadline.id == deadline_id_int).first()
+    if not deadline:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deadline not found")
+
+    if current_user.role != "admin" and deadline.user_id != current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deadline not found")
+
+    return deadline
 
 
 @router.get(
@@ -108,7 +156,8 @@ async def get_upcoming_deadlines(
 )
 async def get_deadline_details(
     deadline_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> DeadlineResponse:
     """Get complete deadline details"""
     
@@ -118,20 +167,25 @@ async def get_deadline_details(
         user_id=current_user.user_id
     )
     
+    deadline = _require_owned_deadline(deadline_id, current_user, db)
     now = datetime.now(timezone.utc)
+    due_date = deadline.deadline_date
+    if due_date is not None and due_date.tzinfo is None:
+        due_date = due_date.replace(tzinfo=timezone.utc)
+    days_until = deadline.days_until_deadline()
     return DeadlineResponse(
-        deadline_id=deadline_id,
+        deadline_id=str(deadline.id),
         user_id=current_user.user_id,
-        case_id="case_001",
-        title="Example Deadline",
-        description="Example deadline description",
-        due_date=now + timedelta(days=5),
-        days_until_due=5,
-        priority="high",
-        status="pending",
+        case_id=str(deadline.case_id),
+        title=deadline.case_title,
+        description=deadline.description or "",
+        due_date=due_date or now,
+        days_until_due=days_until,
+        priority=_deadline_priority(days_until),
+        status="completed" if deadline.is_completed else ("overdue" if due_date and due_date < now else "pending"),
         reminder_enabled=True,
         reminder_days=7,
-        created_at=now
+        created_at=deadline.created_at
     )
 
 
@@ -147,7 +201,8 @@ async def create_deadline(
     priority: str = "medium",
     case_id: str = None,
     reminder_days: int = 7,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ) -> DeadlineResponse:
     """Create a new deadline"""
     
@@ -157,6 +212,8 @@ async def create_deadline(
         title=title
     )
     
+    _require_owned_case(case_id, current_user, db)
+
     now = datetime.now(timezone.utc)
     days_until = (due_date - now).days
     
@@ -168,7 +225,7 @@ async def create_deadline(
         description=description,
         due_date=due_date,
         days_until_due=days_until,
-        priority=priority,
+        priority=priority or _deadline_priority(days_until),
         status="pending",
         reminder_enabled=True,
         reminder_days=reminder_days,
@@ -186,7 +243,8 @@ async def update_deadline(
     title: str = None,
     due_date: datetime = None,
     priority: str = None,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ) -> DeadlineResponse:
     """Update a deadline"""
     
@@ -196,19 +254,23 @@ async def update_deadline(
         user_id=current_user.user_id
     )
     
-    # In production, fetch and update from database
+    deadline = _require_owned_deadline(deadline_id, current_user, db)
     now = datetime.now(timezone.utc)
+    effective_due_date = due_date or deadline.deadline_date
+    if effective_due_date is not None and effective_due_date.tzinfo is None:
+        effective_due_date = effective_due_date.replace(tzinfo=timezone.utc)
+    days_until = ((effective_due_date or now) - now).days
     return DeadlineResponse(
-        deadline_id=deadline_id,
+        deadline_id=str(deadline.id),
         user_id=current_user.user_id,
-        case_id="case_001",
-        title=title or "Updated Deadline",
-        description="Updated description",
-        due_date=due_date or (now + timedelta(days=7)),
-        days_until_due=7,
-        priority=priority or "medium",
-        status="pending",
+        case_id=str(deadline.case_id),
+        title=title or deadline.case_title,
+        description=deadline.description or "",
+        due_date=effective_due_date or now,
+        days_until_due=days_until,
+        priority=priority or _deadline_priority(days_until),
+        status="completed" if deadline.is_completed else ("overdue" if effective_due_date and effective_due_date < now else "pending"),
         reminder_enabled=True,
         reminder_days=7,
-        created_at=now
+        created_at=deadline.created_at
     )
