@@ -576,6 +576,16 @@ def create_timeline_event(
         description=description,
         event_date=event_date or dt.datetime.now(dt.timezone.utc),
         event_metadata=metadata,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+def create_case_document(
+    db: Session,
+    case_id: int,
     document_type: DocumentType,
     user_id: int,
     document_content: Optional[str] = None,
@@ -608,10 +618,8 @@ def create_timeline_event(
         summary=summary,
         remedies=remedies,
     )
-    db.add(event)
+    db.add(doc)
     db.commit()
-    db.refresh(event)
-    return event
     db.refresh(doc)
     return doc
 
