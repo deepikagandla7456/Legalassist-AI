@@ -104,8 +104,30 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 _scheduler: Optional[BackgroundScheduler] = None
-notification_service = NotificationService()
+_notification_service_instance: Optional[NotificationService] = None
 _instance_id = str(uuid.uuid4())[:8]
+
+
+class _LazyNotificationService:
+    """Lazy proxy that initializes NotificationService on first attribute access."""
+
+    def _ensure(self) -> NotificationService:
+        global _notification_service_instance
+        if _notification_service_instance is None:
+            _notification_service_instance = NotificationService()
+        return _notification_service_instance
+
+    def __getattr__(self, name):
+        return getattr(self._ensure(), name)
+
+
+notification_service = _LazyNotificationService()
+
+
+def get_notification_service() -> NotificationService:
+    """Lazily initialize the notification service singleton."""
+    return notification_service._ensure()
+
 
 # Lock configuration
 LOCK_KEY = "legalassist:scheduler:lock"
