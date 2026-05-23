@@ -263,10 +263,7 @@ class UserPreference(Base):
 class NotificationLog(Base):
     """Model for tracking sent notifications"""
     __tablename__ = "notification_logs"
-    __table_args__ = (
-        UniqueConstraint("deadline_id", "days_before", "channel", name="uq_notification_deadline_days_channel"),
-        {"extend_existing": True},
-    )
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
     deadline_id = Column(Integer, ForeignKey("case_deadlines.id", ondelete="CASCADE"), nullable=False, index=True)
