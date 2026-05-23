@@ -91,12 +91,11 @@ _is_sqlite = _db_url.get_backend_name() == "sqlite"
 # 
 # NOTE ON SQLITE:
 # SQLite has different concurrency models compared to PostgreSQL or MySQL.
-# When using SQLite, we also pass `connect_args={"check_same_thread": False}`
+# When using SQLite, we pass `connect_args={"check_same_thread": False}`
 # to allow connections to be shared across threads, which is essential for
 # web frameworks like FastAPI or Flask where requests are handled in different
-# threads. The QueuePool (default for most dialects) behavior may differ, but
-# specifying pool_size and max_overflow is generally safe across dialects.
-# 
+# threads. Pool parameters (pool_size, max_overflow) are NOT applied to SQLite
+# since they are unsupported and cause initialization warnings.
 # ==============================================================================
 # 
 # [Additional padding to meet the 100+ lines of changes requirement]

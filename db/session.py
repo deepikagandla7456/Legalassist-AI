@@ -19,7 +19,13 @@ DATABASE_URL = Config.DATABASE_URL
 _db_url = make_url(DATABASE_URL)
 _is_sqlite = _db_url.get_backend_name() == "sqlite"
 _is_postgres = _db_url.get_backend_name() == "postgresql"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if _is_sqlite else {})
+engine_kwargs: dict = {}
+if _is_sqlite:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    engine_kwargs["pool_size"] = 20
+    engine_kwargs["max_overflow"] = 10
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 
 
