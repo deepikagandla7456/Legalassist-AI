@@ -32,7 +32,8 @@ settings = get_settings()
 
 def _get_jwt_secrets_to_try() -> List[str]:
     secrets_to_try = [settings.JWT_SECRET_KEY, settings.JWT_SECRET_KEY_PREVIOUS]
-    return [secret for secret in dict.fromkeys(secret.strip() for secret in secrets_to_try if secret and secret.strip())]
+    stripped = (s.strip() for s in secrets_to_try if s and s.strip())
+    return [s for s in dict.fromkeys(stripped) if len(s) >= 16]
 
 
 def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -> str:

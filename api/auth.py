@@ -63,7 +63,8 @@ def get_password_hash(password: str) -> str:
 
 def _get_jwt_secrets_to_try() -> list[str]:
     secrets_to_try = [settings.JWT_SECRET_KEY, settings.JWT_SECRET_KEY_PREVIOUS]
-    return [secret for secret in dict.fromkeys(secret.strip() for secret in secrets_to_try if secret and secret.strip())]
+    stripped = (s.strip() for s in secrets_to_try if s and s.strip())
+    return [s for s in dict.fromkeys(stripped) if len(s) >= 16]
 
 
 # JWT token functions delegated to `api.jwt_auth`

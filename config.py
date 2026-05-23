@@ -166,7 +166,7 @@ class Config:
             cls.get_current_jwt_secret(),
             str(cls.JWT_SECRET_PREVIOUS).strip(),
         ]
-        return [secret for secret in dict.fromkeys(secrets_to_try) if secret]
+        return [secret for secret in dict.fromkeys(secrets_to_try) if secret and len(secret) >= 16]
 
     # --- Notification Settings (SMS) ---
     TWILIO_ACCOUNT_SID = _get_val("TWILIO_ACCOUNT_SID", "")
