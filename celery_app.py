@@ -534,18 +534,27 @@ def analyze_document_task(
         )
         
         extracted_text = text
+        if extracted_text:
+            if len(extracted_text.encode("utf-8")) > ValidationConfig.MAX_TEXT_LENGTH:
+                raise ValueError(f"Input text exceeds max limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
         if not extracted_text and file_bytes:
+            if len(file_bytes) > ValidationConfig.MAX_TEXT_LENGTH:
+                raise ValueError(f"File too large: {len(file_bytes)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
             extracted_text = extract_text_from_pdf(io.BytesIO(file_bytes))
         if not extracted_text:
             if file_url:
                 response = requests.get(file_url, timeout=30)
                 response.raise_for_status()
+                if len(response.content) > ValidationConfig.MAX_TEXT_LENGTH:
+                    raise ValueError(f"Downloaded file too large: {len(response.content)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
                 content_type = response.headers.get("Content-Type", "")
                 if "application/pdf" in content_type or file_url.lower().endswith(".pdf"):
                     extracted_text = extract_text_from_pdf(io.BytesIO(response.content))
                 else:
                     extracted_text = response.content.decode("utf-8", errors="ignore")
             elif file_path:
+                if os.path.getsize(file_path) > ValidationConfig.MAX_TEXT_LENGTH:
+                    raise ValueError(f"File too large: {os.path.getsize(file_path)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
                 if file_path.lower().endswith(".pdf"):
                     with open(file_path, "rb") as f:
                         extracted_text = extract_text_from_pdf(io.BytesIO(f.read()))
