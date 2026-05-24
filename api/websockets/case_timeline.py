@@ -40,23 +40,32 @@ class AuthError(Exception):
 
 
 def _verify_token(token: str) -> dict:
-    try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM],
-            issuer=settings.JWT_ISSUER,
-            audience=settings.JWT_AUDIENCE,
-            options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "type"], "verify_nbf": True},
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise TokenExpiredError("Token has expired") from exc
-    except jwt.InvalidIssuerError as exc:
-        raise InvalidTokenError("Invalid token issuer") from exc
-    except jwt.InvalidAudienceError as exc:
-        raise InvalidTokenError("Invalid token audience") from exc
-    except jwt.InvalidTokenError as exc:
-        raise InvalidTokenError("Invalid token") from exc
+    secrets_to_try = [settings.JWT_SECRET_KEY, settings.JWT_SECRET_KEY_PREVIOUS]
+    secrets_to_try = [s for s in secrets_to_try if s and len(s.strip()) >= 16]
+
+    payload = None
+    last_error = None
+    for secret in secrets_to_try:
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=[settings.JWT_ALGORITHM],
+                issuer=settings.JWT_ISSUER,
+                audience=settings.JWT_AUDIENCE,
+                options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "type"], "verify_nbf": True},
+            )
+            break
+        except jwt.ExpiredSignatureError as exc:
+            last_error = exc
+        except jwt.InvalidTokenError as exc:
+            last_error = exc
+            continue
+
+    if payload is None:
+        if isinstance(last_error, jwt.ExpiredSignatureError):
+            raise TokenExpiredError("Token has expired") from last_error
+        raise InvalidTokenError(str(last_error) if last_error else "Invalid token")
 
     if payload.get("type") != "access":
         raise InvalidTokenError("Invalid token type")
