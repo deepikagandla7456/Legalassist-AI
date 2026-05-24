@@ -44,12 +44,18 @@ def save_attachment(file_bytes: bytes, original_filename: str) -> Tuple[str, int
 
     stored_path = ATTACHMENTS_DIR / stored_name
 
+    # Verify the resolved path stays within the attachments directory
+    resolved = stored_path.resolve()
+    if not resolved.is_relative_to(ATTACHMENTS_DIR.resolve()):
+        logger.warning("Blocked resolved path outside attachments directory", path=str(resolved))
+        raise ValueError("Invalid storage path")
+
     # Write file
-    with open(stored_path, "wb") as f:
+    with open(resolved, "wb") as f:
         f.write(file_bytes)
 
-    size = stored_path.stat().st_size
-    return str(stored_path), size
+    size = resolved.stat().st_size
+    return str(resolved), size
 
 
 def get_attachment_path(stored_path: str) -> str:
