@@ -118,10 +118,13 @@ def _get_or_create_user(email: str, name: str, provider: str, provider_id: str) 
 
 
 def _build_token_response(user: User, provider: str) -> RedirectResponse:
+    from api.config import get_settings
+    _sso_settings = get_settings()
     role = user.role.value if user.role else "client"
     token = create_access_token(
         data={"sub": str(user.id), "email": user.email, "role": role, "provider": provider}
     )
+    token_max_age = _sso_settings.JWT_ACCESS_TOKEN_MINUTES * 60
     response = RedirectResponse(url="/", status_code=302)
     response.set_cookie(
         key="access_token",
@@ -130,7 +133,7 @@ def _build_token_response(user: User, provider: str) -> RedirectResponse:
         secure=True,
         samesite="lax",
         path="/",
-        max_age=3600 * 24 * 7,
+        max_age=token_max_age,
     )
     csrf_token = generate_csrf_token(user.id, secrets.token_urlsafe(16))
     response.set_cookie(
@@ -140,7 +143,7 @@ def _build_token_response(user: User, provider: str) -> RedirectResponse:
         secure=True,
         samesite="lax",
         path="/",
-        max_age=3600 * 24 * 7,
+        max_age=token_max_age,
     )
     return response
 
