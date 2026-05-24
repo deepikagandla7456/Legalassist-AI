@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from core.timeline_payloads import TimelineEventPayload
-from services.timeline_realtime import TimelineRealtimeBus
+from services.timeline_realtime import TimelineRealtimeBus, publish_timeline_event_best_effort
 from pydantic import ValidationError
 
 
@@ -207,5 +207,42 @@ def test_publish_keeps_latest_message_when_queue_is_full():
             assert mock_warning.call_count == 1
             assert mock_warning.call_args.kwargs["policy"] == "drop_oldest_keep_latest"
             assert mock_warning.call_args.kwargs["case_id"] == 7
+
+    asyncio.run(scenario())
+
+
+def test_publish_timeline_event_best_effort_logs_async_task_failures():
+    async def scenario() -> None:
+        payload = {
+            "schema_version": 2,
+            "type": "timeline_event",
+            "case_id": 7,
+            "event_type": "deadline_created",
+            "description": "Manual deadline added",
+            "timestamp": datetime(2026, 5, 22, 10, 30, tzinfo=timezone.utc),
+            "metadata": {},
+            "event_id": 555,
+        }
+
+        async def failing_publish(*args, **kwargs):
+            raise ValueError("boom")
+
+        with patch.object(
+            TimelineRealtimeBus,
+            "publish",
+            failing_publish,
+        ):
+            with patch("services.timeline_realtime.logger.error") as mock_error:
+                task = publish_timeline_event_best_effort(payload)
+                assert task is not None
+
+                with pytest.raises(ValueError, match="boom"):
+                    await task
+
+                assert mock_error.call_count == 1
+                assert mock_error.call_args.args[0] == "timeline_realtime_publish_failed"
+                assert mock_error.call_args.kwargs["case_id"] == 7
+                assert mock_error.call_args.kwargs["error_type"] == "ValueError"
+                assert mock_error.call_args.kwargs["error"] == "boom"
 
     asyncio.run(scenario())

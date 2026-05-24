@@ -4,7 +4,7 @@ import asyncio
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
 
 import structlog
 
@@ -149,10 +149,24 @@ timeline_queue_maxsize = int(os.getenv("TIMELINE_REALTIME_QUEUE_MAXSIZE", "100")
 timeline_realtime_bus = TimelineRealtimeBus(queue_maxsize=timeline_queue_maxsize)
 
 
-def publish_timeline_event_best_effort(payload: Dict[str, Any]) -> None:
+def publish_timeline_event_best_effort(payload: Dict[str, Any]) -> Optional[asyncio.Task[Any]]:
     """Publish a timeline event without depending on the caller's loop state."""
     case_id = payload["case_id"]
     publish_coro = timeline_realtime_bus.publish(case_id=case_id, payload=payload)
+
+    def _log_publish_task_failure(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "timeline_realtime_publish_failed",
+                case_id=case_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=exc,
+            )
 
     try:
         loop = asyncio.get_running_loop()
@@ -160,11 +174,13 @@ def publish_timeline_event_best_effort(payload: Dict[str, Any]) -> None:
         loop = None
 
     if loop is not None:
-        loop.create_task(publish_coro)
-        return
+        task = loop.create_task(publish_coro)
+        task.add_done_callback(_log_publish_task_failure)
+        return task
 
     fallback_loop = asyncio.new_event_loop()
     try:
         fallback_loop.run_until_complete(publish_coro)
     finally:
         fallback_loop.close()
+    return None
