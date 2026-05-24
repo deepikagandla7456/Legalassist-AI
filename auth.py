@@ -153,11 +153,16 @@ def send_otp_email(email: str, otp: str) -> bool:
 
         if not api_key or sendgrid is None:
             if _is_debug_or_testing_mode():
+
+                logger.warning("SendGrid API key not configured or sendgrid package not installed - using masked OTP logging for debug/test mode")
+                logger.debug("OTP generated: [MASKED]")
+
                 logger.warning(
                     "otp_delivery_debug_mode",
                     recipient=mask_email(email),
                     transport="sendgrid",
                 )
+
                 return True  # Simulate success only in explicit debug/testing environments
             logger.error(
                 "otp_delivery_unavailable",
@@ -209,13 +214,21 @@ def send_otp_email(email: str, otp: str) -> bool:
             error=sanitize_log_text(str(e)),
         )
         if _is_debug_or_testing_mode():
+
  fix/otp-log-leak
+    logger.debug("OTP delivery simulated: [MASKED]")
+
+    logger.debug("otp_delivery_debug_mode", recipient=mask_email(email), transport="sendgrid")
+
+
+
             logger.debug("OTP delivery simulated: [MASKED]")
 
             logger.debug("otp_delivery_debug_mode", recipient=mask_email(email), transport="sendgrid")
- main
+
+
         else:
-            logger.warning("otp_delivery_failed", recipient=mask_email(email))
+        logger.warning("otp_delivery_failed", recipient=mask_email(email))
         return False
 
 
@@ -479,7 +492,7 @@ def create_jwt_token(user_id: int, email: str) -> str:
     # Delegate JWT creation to the canonical API auth implementation
     from api.auth import create_access_token
 
-    data = {"sub": str(user_id), "email": email}
+    data = {"sub": str(user_id), "user_id": user_id, "email": email}
     return create_access_token(data)
 
 
