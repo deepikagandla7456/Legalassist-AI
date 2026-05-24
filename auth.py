@@ -699,7 +699,7 @@ def verify_login(otp: str) -> bool:
         # Get user ID from token payload
         payload = verify_jwt_token(token)
         if payload:
-            st.session_state.user_id = payload.get("user_id")
+            st.session_state.user_id = payload.get("sub", payload.get("user_id"))
 
         st.session_state.is_authenticated = True
         st.session_state.pending_email = None
