@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from core.deadline_engine import calculate_deadline
+from api.auth import get_current_user, CurrentUser
 
 router = APIRouter(prefix="/api/deadline", tags=["deadline"])
 
@@ -18,7 +19,7 @@ class DeadlineRequest(BaseModel):
 
 
 @router.post("/calculate")
-async def calculate_endpoint(req: DeadlineRequest):
+async def calculate_endpoint(req: DeadlineRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
         res = calculate_deadline(
             start=req.start,

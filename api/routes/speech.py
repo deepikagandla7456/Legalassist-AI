@@ -1,7 +1,8 @@
 """API routes for audio transcription (voice-to-text)."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from core.speech_transcription import TranscriptionEngine
+from api.auth import get_current_user, CurrentUser
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ class TranscribeRequest(BaseModel):
 
 
 @router.post("/transcribe")
-def transcribe(req: TranscribeRequest):
+def transcribe(req: TranscribeRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
         import base64
 
