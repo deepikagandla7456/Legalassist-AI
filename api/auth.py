@@ -251,10 +251,11 @@ def _resolve_api_key_user(api_key: str, db: Session) -> CurrentUser:
 
     # Use a deterministic negative user_id derived from key_id to give each
     # unlinked API key its own identity for rate limiting and audit logging.
-    derived_id = int.from_bytes(hashlib.sha256(key_id.encode()).digest()[:4], "big", signed=False)
+    # 8 bytes provides a 64-bit space, virtually eliminating collision risk.
+    derived_id = int.from_bytes(hashlib.sha256(key_id.encode()).digest()[:8], "big", signed=False)
     return CurrentUser(
         user_id=-derived_id,
-        email="api_user",
+        email=f"api_key_{key_id[:8]}",
         role="api",
     )
 
