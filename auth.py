@@ -133,8 +133,8 @@ def _hash_otp(otp: str) -> str:
 
 
 def _verify_otp_hash(otp: str, otp_hash: str) -> bool:
-    """Verify OTP against stored hash"""
-    return _hash_otp(otp) == otp_hash
+    """Verify OTP against stored hash using constant-time comparison"""
+    return secrets.compare_digest(_hash_otp(otp), otp_hash)
 
 
 def generate_otp() -> str:
