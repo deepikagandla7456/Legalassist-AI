@@ -984,8 +984,6 @@ class CasePresence(Base):
     last_seen = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
-<<<<<<< HEAD
-=======
 
     case = relationship("Case", back_populates="presence_updates")
     user = relationship("User", back_populates="case_presence")
@@ -1168,7 +1166,6 @@ class PrecedentMatch(Base):
         return f"<PrecedentMatch(query={self.query_case_id}, precedent={self.precedent_case_id}, type={self.match_type})>"
 
 
->>>>>>> upstream
 # Database initialization
 def init_db():
     """Create all tables"""
