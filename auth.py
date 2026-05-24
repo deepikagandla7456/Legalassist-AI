@@ -214,22 +214,12 @@ def send_otp_email(email: str, otp: str) -> bool:
             error=sanitize_log_text(str(e)),
         )
         if _is_debug_or_testing_mode():
-
- fix/otp-log-leak
-    logger.debug("OTP delivery simulated: [MASKED]")
-
-    logger.debug("otp_delivery_debug_mode", recipient=mask_email(email), transport="sendgrid")
-
-
-
             logger.debug("OTP delivery simulated: [MASKED]")
-
             logger.debug("otp_delivery_debug_mode", recipient=mask_email(email), transport="sendgrid")
-
-
+            return True
         else:
-        logger.warning("otp_delivery_failed", recipient=mask_email(email))
-        return False
+            logger.warning("otp_delivery_failed", recipient=mask_email(email))
+            return False
 
 
 def request_otp(email: str, requester_ip: Optional[str] = None) -> Tuple[bool, str]:

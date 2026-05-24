@@ -35,6 +35,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from api.auth import create_access_token, CurrentUser
+from core.log_redaction import mask_email
 from api.csrf import CSRF_COOKIE_NAME, generate_csrf_token
 from database import get_db, SessionLocal, User
 
@@ -110,7 +111,7 @@ def _get_or_create_user(email: str, name: str, provider: str, provider_id: str) 
         db.add(user)
         db.commit()
         db.refresh(user)
-        logger.info("sso_user_provisioned", email=email, provider=provider)
+        logger.info("sso_user_provisioned", email=mask_email(email), provider=provider)
         return user
     finally:
         db.close()
