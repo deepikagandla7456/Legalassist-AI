@@ -969,7 +969,7 @@ def generate_anonymized_case_data(case_id: int, profile_name: Optional[str] = No
 # BULK OPERATIONS
 # =============================================================================
 
-def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
+def delete_user_cases(user_id: int, case_ids: List[int], confirm: bool = False) -> Dict[str, Any]:
     """
     Perform a bulk deletion of multiple cases belonging to a specific user.
     
@@ -983,16 +983,23 @@ def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
     --------------------------
     1. Single Query Execution: All specified cases are deleted in one SQL 
        statement: DELETE FROM cases WHERE id IN (...) AND user_id = :user_id.
-    2. synchronize_session=False: We bypass the expensive session state 
-       synchronization logic since we are deleting records and don't need 
-       to update in-memory objects.
+    2. synchronize_session='fetch': We refresh the session state after deletion 
+       to prevent ORM inconsistencies and silent data loss.
     3. User ID Scoping: The query is strictly scoped to the user_id to 
        ensure that users can only delete their own data, preventing 
        unauthorized deletions.
     
+    Safety:
+    -------
+    This function REQUIRES confirm=True to execute. This prevents accidental 
+    bulk data loss from unintended call paths. The caller (UI or API) should 
+    present a confirmation dialog before passing confirm=True.
+    
     Args:
         user_id (int): The unique identifier of the user performing the deletion.
         case_ids (List[int]): A list of case IDs to be permanently removed.
+        confirm (bool): Must be True to execute. Defaults to False as a 
+                        safety guard against accidental deletion.
         
     Returns:
         Dict[str, Any]: A result dictionary containing:
@@ -1022,35 +1029,51 @@ def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
         logger.warning(f"No case IDs provided for bulk deletion by user {user_id}")
         result["success"] = True
         return result
+    
+    # Safety guard: require explicit confirmation to prevent accidental deletion
+    if not confirm:
+        logger.warning(
+            f"Bulk deletion blocked for user {user_id}: "
+            f"confirm=False. Target IDs: {case_ids}"
+        )
+        result["error"] = "Confirmation required. Call with confirm=True to proceed."
+        return result
         
     try:
         # ---------------------------------------------------------------------
-        # Bulk Deletion Execution
+        # Pre-deletion audit — log target cases before deletion
         # ---------------------------------------------------------------------
         
+        targets = db.query(Case.id, Case.case_number, Case.title).filter(
+            Case.id.in_(case_ids),
+            Case.user_id == user_id
+        ).all()
+        
+        if not targets:
+            logger.warning(f"No matching cases found for user {user_id} with IDs {case_ids}")
+            result["success"] = True
+            return result
+        
         logger.info(
-            f"Initiating bulk deletion for user {user_id}. "
-            f"Targeting {len(case_ids)} potential cases."
+            "Bulk deletion requested for user %d: %d cases",
+            user_id, len(targets),
+            extra={"case_ids": [t.id for t in targets]},
         )
         
-        # We use session.query(Case).filter().delete() for maximum efficiency.
-        # This translates to a single DELETE statement at the database level.
-        #
-        # Security Note: We MUST include the user_id in the filter to prevent 
-        # ID-traversal attacks where a user could delete cases belonging 
-        # to other users by guessing their IDs.
+        # ---------------------------------------------------------------------
+        # Bulk Deletion Execution
+        # ---------------------------------------------------------------------
         
         query = db.query(Case).filter(
             Case.id.in_(case_ids),
             Case.user_id == user_id
         )
         
-        # Execute the delete operation.
-        # We set synchronize_session=False because we don't need to update 
-        # any in-memory Case objects after they are deleted. This provides 
-        # a slight performance boost by avoiding session state management.
+        # Execute the delete operation with synchronize_session='fetch' to 
+        # ensure the ORM session stays consistent with the database after 
+        # the bulk operation, preventing silent data loss.
         
-        deleted_count = query.delete(synchronize_session=False)
+        deleted_count = query.delete(synchronize_session='fetch')
         
         # Commit the transaction to persist the changes.
         db.commit()
@@ -1060,8 +1083,8 @@ def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
         # ---------------------------------------------------------------------
         
         logger.info(
-            f"Bulk deletion successful for user {user_id}. "
-            f"Records removed: {deleted_count}."
+            "Bulk deletion successful for user %d. Records removed: %d.",
+            user_id, deleted_count,
         )
         
         result["success"] = True
@@ -1072,8 +1095,6 @@ def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
         # Error Handling and Recovery
         # ---------------------------------------------------------------------
         
-        # Roll back the transaction if any part of the deletion fails to 
-        # maintain database consistency.
         db.rollback()
         
         error_msg = f"Failed to execute bulk deletion: {str(e)}"
@@ -1083,8 +1104,6 @@ def delete_user_cases(user_id: int, case_ids: List[int]) -> Dict[str, Any]:
         result["error"] = error_msg
         
     finally:
-        # Always ensure the database session is closed to prevent 
-        # connection pool exhaustion.
         db.close()
         
     return result
