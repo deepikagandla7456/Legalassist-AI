@@ -50,8 +50,8 @@ class TimelineRealtimeBus:
         with self._drop_lock:
             self._dropped_messages_total += 1
             total_dropped = self._dropped_messages_total
+            channel.dropped_messages += 1
 
-        channel.dropped_messages += 1
         logger.warning(
             "timeline_realtime_queue_dropped",
             case_id=case_id,
