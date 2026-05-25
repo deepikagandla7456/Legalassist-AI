@@ -255,12 +255,6 @@ def request_otp(email: str, requester_ip: Optional[str] = None) -> Tuple[bool, s
         email_sent = send_otp_email(email, otp)
 
         if email_sent:
-            # Create user if doesn't exist
-            user = get_user_by_email(db, email)
-            if not user:
-                create_user(db, email)
-                logger.info("auth_new_user_created", recipient=mask_email(email))
-
             return True, "OTP sent to your email"
         else:
             return False, "Failed to send OTP email. Please try again."
