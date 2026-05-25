@@ -120,6 +120,8 @@ def verify_token(token: str) -> Dict:
                 continue
 
         if payload is None:
+            if isinstance(last_error, jwt.ExpiredSignatureError):
+                raise TokenExpiredError("Token has expired")
             raise InvalidTokenError(str(last_error) if last_error else "Invalid token")
         if payload.get("type") != "access":
             raise InvalidTokenError("Invalid token type")
