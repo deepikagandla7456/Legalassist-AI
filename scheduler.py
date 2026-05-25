@@ -370,6 +370,8 @@ def check_and_send_reminders():
         finally:
             db.close()
 
+    return sent_count
+
 
 def recompute_due_knowledge_invalidations():
     """Recompute stale knowledge artifacts after invalidations become due."""
