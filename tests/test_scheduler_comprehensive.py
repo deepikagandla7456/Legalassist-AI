@@ -1,6 +1,7 @@
 
 import pytest
 from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from sqlalchemy import event
@@ -149,6 +150,50 @@ class TestSchedulerComprehensive:
         assert mock_error.call_args.kwargs["user_id"] is not None
         assert mock_error.call_args.kwargs["days_left"] == 30
         assert "boom" in mock_error.call_args.kwargs["error"]
+
+    def test_run_system_maintenance_task_disabled_by_default(self):
+        """Test that maintenance tasks are skipped unless explicitly enabled."""
+        import scheduler
+
+        with patch.object(scheduler, "ENABLE_MAINTENANCE_TASKS", False), \
+             patch.object(scheduler, "logger") as mock_logger, \
+             patch.object(scheduler, "distributed_lock") as mock_lock:
+            mock_lock.return_value.__enter__.return_value = True
+            mock_lock.return_value.__exit__.return_value = False
+
+            scheduler.run_system_maintenance_task()
+
+        mock_logger.info.assert_any_call("scheduler_maintenance_disabled")
+
+    def test_run_system_maintenance_task_uses_configured_command(self):
+        """Test that enabled maintenance runs the configured command instead of a hard-coded example."""
+        import scheduler
+
+        fake_process = MagicMock()
+        fake_process.communicate.return_value = ("ok", "")
+        fake_process.returncode = 0
+
+        captured_command = {}
+
+        @contextmanager
+        def fake_managed_subprocess(command, **kwargs):
+            captured_command["value"] = command
+            yield fake_process
+
+        with patch.object(scheduler, "ENABLE_MAINTENANCE_TASKS", True), \
+               patch.object(scheduler, "MAINTENANCE_TASK_COMMAND", "python -m maintenance_runner"), \
+             patch.object(scheduler, "managed_subprocess", fake_managed_subprocess), \
+             patch.object(scheduler, "logger") as mock_logger, \
+             patch.object(scheduler, "distributed_lock") as mock_lock:
+            mock_lock.return_value.__enter__.return_value = True
+            mock_lock.return_value.__exit__.return_value = False
+
+            scheduler.run_system_maintenance_task()
+
+        assert captured_command["value"] == ["python", "-m", "maintenance_runner"]
+        mock_process_communicate = fake_process.communicate
+        mock_process_communicate.assert_called_once_with(timeout=30)
+        mock_logger.info.assert_any_call("scheduler_maintenance_completed")
 
     def test_check_and_send_reminders_bulk_prefetch_avoids_n_plus_one(self, test_db):
         """Test that preference lookup stays bulk even with many deadlines."""
