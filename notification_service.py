@@ -68,6 +68,15 @@ from core.template_renderer import render_template, validate_template, TemplateV
 from core.log_redaction import mask_recipient, sanitize_log_text
 
 # Import debug mode helper
+
+_NOTIFICATION_PREVIEW_MAX_LEN = 200
+
+
+def _safe_preview(text: Optional[str]) -> str:
+    """Truncate and redact PII from notification content for DB storage."""
+    return sanitize_log_text(text)[:_NOTIFICATION_PREVIEW_MAX_LEN]
+
+
 def _is_debug_or_testing_mode() -> bool:
     """Return True when explicit debug/testing flags are enabled."""
     return Config.DEBUG or Config.TESTING
@@ -294,7 +303,7 @@ def send_email_task(
                     status=status,
                     message_id=message_id,
                     error_message=error,
-                    message_preview=html_content,
+                    message_preview=_safe_preview(html_content),
                 )
                 logger.info("background_notification_logged", deadline_id=deadline_id)
         except Exception as e:
@@ -401,7 +410,7 @@ def send_sms_task(
                     status=status,
                     message_id=message_id,
                     error_message=error,
-                    message_preview=message,
+                    message_preview=_safe_preview(message),
                 )
                 logger.info("background_sms_notification_logged", deadline_id=deadline_id)
         except Exception as e:
@@ -636,7 +645,7 @@ class NotificationService:
             channel=NotificationChannel.SMS,
             status=NotificationStatus.PENDING,
             message_id=f"task_{task_result.id}",
-            message_preview=message,
+            message_preview=_safe_preview(message),
         )
 
         return NotificationResult(
@@ -740,7 +749,7 @@ class NotificationService:
             channel=NotificationChannel.EMAIL,
             status=NotificationStatus.PENDING,
             message_id=f"task_{task_result.id}",
-            message_preview=html_content,
+            message_preview=_safe_preview(html_content),
         )
 
         return NotificationResult(
