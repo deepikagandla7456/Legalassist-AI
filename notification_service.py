@@ -124,7 +124,7 @@ class SMSClient:
         try:
             if not self.client:
                 # Not configured: run in mock mode ONLY if in debug/testing.
-                if _is_debug_or_testing_mode():
+                if _is_debug_or_testing_mode() and not Config.is_production():
                     logger.info("sms_mocked", recipient=mask_recipient(to_number))
                     return True, f"mock_sms_{datetime.now().timestamp()}", None
                 
@@ -180,7 +180,7 @@ class EmailClient:
         try:
             if not self.client:
                 # Not configured: run in mock mode ONLY if in debug/testing.
-                if _is_debug_or_testing_mode():
+                if _is_debug_or_testing_mode() and not Config.is_production():
                     logger.info("email_mocked", recipient=mask_recipient(to_email))
                     return True, f"mock_email_{datetime.now().timestamp()}", None
                 
