@@ -11,7 +11,7 @@ from typing import Optional
 
 import jwt
 import structlog
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, WebSocket
 from fastapi import Depends
 from api.config import get_settings
 from api.limiter import enforce_rate_limit, RateLimitExceeded
@@ -70,26 +70,19 @@ def _verify_token(token: str) -> dict:
     return payload
 
 
-def parse_auth_from_websocket(websocket: WebSocket, token: Optional[str] = None) -> Optional[str]:
+def parse_auth_from_websocket(websocket: WebSocket) -> Optional[str]:
     """Extract the auth token from the Sec-WebSocket-Protocol header.
 
-    Falls back to query parameter only if header is absent.
     Returns ``None`` if no token is found.
     """
-    auth_token = None
-    requested_protocols = []
-
     if "sec-websocket-protocol" in websocket.headers:
         header_val = websocket.headers["sec-websocket-protocol"]
         requested_protocols = [p.strip() for p in header_val.split(",")]
         if "access_token" in requested_protocols:
             idx = requested_protocols.index("access_token")
             if idx + 1 < len(requested_protocols):
-                auth_token = requested_protocols[idx + 1]
-
-    if not auth_token:
-        auth_token = token
-    return auth_token
+                return requested_protocols[idx + 1]
+    return None
 
 
 async def forward_timeline_events(websocket: WebSocket, case_id: int, bus: TimelineRealtimeBus) -> None:
@@ -141,11 +134,10 @@ def register_case_timeline_endpoint(app: FastAPI) -> None:
     async def websocket_case_timeline_endpoint(
         websocket: WebSocket,
         case_id: int,
-        token: Optional[str] = Query(None),
         db: Session = Depends(get_db),
     ):
         # Authentication
-        auth_token = parse_auth_from_websocket(websocket, token)
+        auth_token = parse_auth_from_websocket(websocket)
         if not auth_token:
             await websocket.close(code=4001, reason="Authentication required")
             return

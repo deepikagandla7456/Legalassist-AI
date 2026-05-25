@@ -335,7 +335,7 @@ app = create_app()
 # ============================================================================
 
 if settings.ENABLE_WEBSOCKET:
-    from fastapi import WebSocket, WebSocketDisconnect, Query
+    from fastapi import WebSocket, WebSocketDisconnect
     from celery_app import TaskStatus
     from api.auth import AuthError, TokenExpiredError, InvalidTokenError
     
@@ -343,12 +343,11 @@ if settings.ENABLE_WEBSOCKET:
     async def websocket_progress_endpoint(
         websocket: WebSocket,
         job_id: str,
-        token: str = Query(None)
     ):
         """
         WebSocket endpoint for real-time job progress
         
-        Requires authentication via Sec-WebSocket-Protocol header or query parameter.
+        Requires authentication via Sec-WebSocket-Protocol header.
         """
         auth_token = None
         requested_protocols = []
@@ -360,9 +359,6 @@ if settings.ENABLE_WEBSOCKET:
                 idx = requested_protocols.index("access_token")
                 if idx + 1 < len(requested_protocols):
                     auth_token = requested_protocols[idx + 1]
-
-        if not auth_token:
-            auth_token = token
 
         if not auth_token:
             await websocket.close(code=4001, reason="Authentication required")
