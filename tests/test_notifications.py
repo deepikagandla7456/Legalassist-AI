@@ -6,9 +6,11 @@ Tests database models, notification services, and scheduler.
 import pytest
 import os
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch, MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from database import (
     Base,
@@ -220,10 +222,27 @@ class TestDatabaseModels:
             now + timedelta(days=40), "submission"
         )
 
+        case4 = Case(
+            user_id=1,
+            case_number="CASE-4",
+            case_type="civil",
+            jurisdiction="Delhi",
+            status=CaseStatus.ACTIVE,
+            title="Case 4",
+        )
+        test_db.add(case4)
+        test_db.commit()
+        test_db.refresh(case4)
+
+        create_case_deadline(
+            test_db, 1, case4.id, "Case 4",
+            now + timedelta(days=30, microseconds=123456), "hearing"
+        )
+
 
         # Get deadlines within 30 days
         upcoming = get_upcoming_deadlines(test_db, days_before=30)
-        assert len(upcoming) == 2  # Should get cases 1 and 2
+        assert len(upcoming) == 3  # Should get cases 1, 2, and 4
 
     def test_notification_logging(self, test_db):
         """Test logging notification attempts"""
@@ -660,6 +679,95 @@ class TestNotificationService:
 
 
 # ==================== Scheduler Tests ====================
+
+
+class TestNotificationDispatchConcurrency:
+    """Concurrency regressions for overlapping reminder jobs."""
+
+    @pytest.fixture()
+    def shared_engine(self):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=engine)
+        yield engine
+        engine.dispose()
+
+    def test_overlapping_reminder_runs_create_one_log_and_send_once(self, shared_engine):
+        session_factory = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=shared_engine)
+        setup_db = session_factory()
+        now = datetime.now(timezone.utc)
+
+        user = User(id=501, email="race@example.com")
+        setup_db.add(user)
+        setup_db.commit()
+
+        case = Case(
+            user_id=501,
+            case_number="CASE-RACE",
+            case_type="civil",
+            jurisdiction="Delhi",
+            status=CaseStatus.ACTIVE,
+            title="Race Case",
+        )
+        setup_db.add(case)
+        setup_db.commit()
+        setup_db.refresh(case)
+
+        deadline = create_case_deadline(
+            setup_db,
+            501,
+            case.id,
+            "Race Case",
+            now + timedelta(days=30, hours=1),
+            "appeal",
+        )
+        preference = create_or_update_user_preference(
+            setup_db,
+            501,
+            "race@example.com",
+            phone_number="+911111111111",
+            notification_channel=NotificationChannel.SMS,
+        )
+
+        setup_db.close()
+
+        service = NotificationService()
+        send_calls = []
+
+        def fake_delay(*args, **kwargs):
+            send_calls.append(kwargs)
+            return MagicMock(id=f"task-{len(send_calls)}")
+
+        with patch("notification_service.send_sms_task.delay", side_effect=fake_delay), \
+             patch("notification_service._is_debug_or_testing_mode", return_value=True):
+
+            def run_once():
+                local_db = session_factory()
+                try:
+                    return service.send_reminders(local_db, deadline, preference, 30)
+                finally:
+                    local_db.close()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _: run_once(), range(2)))
+
+        verify_db = session_factory()
+        try:
+            logs = verify_db.query(NotificationLog).filter(
+                NotificationLog.deadline_id == deadline.id,
+                NotificationLog.days_before == 30,
+                NotificationLog.channel == NotificationChannel.SMS,
+            ).all()
+        finally:
+            verify_db.close()
+
+        assert len(logs) == 1
+        assert len(send_calls) == 1
+        assert any(result and result[0].success for result in results)
+        assert any(result and result[0].error == "Already sent" for result in results if result)
 
 class TestScheduler:
     """Test the background scheduler"""

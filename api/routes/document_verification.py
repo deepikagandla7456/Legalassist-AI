@@ -1,9 +1,10 @@
 """Document registration and verification API routes (simulated blockchain)."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import base64
 from core.blockchain_sim import BlockchainSimulator
 from core.document_verifier import register_document, verify_document
+from api.auth import get_current_user, CurrentUser
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class VerifyRequest(BaseModel):
 
 
 @router.post("/documents/register")
-def register(req: RegisterRequest):
+def register(req: RegisterRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
         file_bytes = base64.b64decode(req.file_base64)
         res = register_document(file_bytes, chain=_GLOBAL_CHAIN, metadata={"filename": req.filename})
@@ -35,7 +36,7 @@ def register(req: RegisterRequest):
 
 
 @router.post("/documents/verify")
-def verify(req: VerifyRequest):
+def verify(req: VerifyRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
         file_bytes = base64.b64decode(req.file_base64)
         res = verify_document(file_bytes, chain=_GLOBAL_CHAIN)

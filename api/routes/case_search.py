@@ -3,12 +3,13 @@ API routes for Case Search and Precedent Matching
 Endpoints for finding similar cases, precedents, comparisons, and knowledge graph queries.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from api.dependencies import get_db, get_current_user
-from database import User
+from database import get_db
+from api.auth import get_current_user
+from database import User, Case
 
 # Import case search engines
 from core.embedding_engine import EmbeddingEngine
@@ -25,6 +26,17 @@ router = APIRouter(prefix="/api/cases", tags=["case-search"])
 
 # Initialize engines
 embedding_engine = EmbeddingEngine()
+
+
+def _require_owned_case(case_id: int, current_user: User, db: Session) -> Case:
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    if current_user.role != "admin" and case.user_id != current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    return case
 
 
 # ==================== Case Search Endpoints ====================
@@ -58,6 +70,8 @@ def search_similar_cases(
     Returns:
         List of similar cases with similarity scores
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         search_engine = SemanticCaseSearch(embedding_engine)
         results = search_engine.search_similar_cases(
@@ -167,6 +181,8 @@ def get_winning_precedents(
     Returns:
         List of precedent cases with winning arguments
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         results = PrecedentMatcher.find_winning_precedents(
             db=db,
@@ -206,6 +222,8 @@ def get_losing_precedents(
     Returns:
         List of cases to avoid based on failed arguments
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         results = PrecedentMatcher.find_losing_precedents(
             db=db,
@@ -306,6 +324,8 @@ def compare_cases(
     Returns:
         Detailed comparison including issues, arguments, and differences
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         comparison = CaseComparison.compare_cases(db, case_id, precedent_id)
         return comparison
@@ -331,6 +351,8 @@ def get_comparison_suggestions(
     Returns:
         List of suggested arguments based on winning precedents
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         suggestions = CaseComparison.suggest_arguments(db, case_id, precedent_id)
         return {
@@ -361,6 +383,8 @@ def get_comparison_differences(
     Returns:
         Highlighted differences and warnings
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         differences = CaseComparison.highlight_differences(db, case_id, precedent_id)
         return differences
@@ -445,6 +469,8 @@ def index_case(
     Returns:
         Indexing status
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         embedding_obj = embedding_engine.embed_case(
             db=db,
@@ -483,6 +509,8 @@ def extract_case_issues(
     Returns:
         List of extracted issues
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         issues = KnowledgeGraphBuilder.extract_issues_from_case(
             db=db,
@@ -521,6 +549,8 @@ def extract_case_arguments(
     Returns:
         List of extracted arguments
     """
+    _require_owned_case(case_id, current_user, db)
+
     try:
         arguments = KnowledgeGraphBuilder.extract_arguments_from_case(
             db=db,
