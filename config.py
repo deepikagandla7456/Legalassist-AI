@@ -192,6 +192,12 @@ class Config:
             raise RuntimeError("DEBUG and TESTING must be disabled in production")
 
         if cls.is_production():
+            if cls.DATABASE_URL and cls.DATABASE_URL.startswith("sqlite"):
+                raise RuntimeError(
+                    "SQLite is not allowed in production. "
+                    "Set DATABASE_URL to a production-grade database (PostgreSQL, MySQL, etc.)."
+                )
+
             required = {
                 "JWT_SECRET": cls.get_current_jwt_secret(),
                 "OPENROUTER_API_KEY": str(cls.OPENROUTER_API_KEY).strip(),
