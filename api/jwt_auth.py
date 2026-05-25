@@ -152,7 +152,8 @@ def revoke_jwt_token(token: str) -> bool:
             exp = unverified.get("exp")
             if not jti or not exp:
                 return False
-        except Exception:
+        except jwt.PyJWTError as exc:
+            logger.warning("revoke_token_decode_failed", error=str(exc))
             return False
 
         payload = None
