@@ -146,16 +146,6 @@ def revoke_jwt_token(token: str) -> bool:
         return False
 
     try:
-        try:
-            unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
-            jti = unverified.get("jti")
-            exp = unverified.get("exp")
-            if not jti or not exp:
-                return False
-        except jwt.PyJWTError as exc:
-            logger.warning("revoke_token_decode_failed", error=str(exc))
-            return False
-
         payload = None
         last_error = None
         for secret in _get_jwt_secrets_to_try():
