@@ -27,6 +27,7 @@ from typing import Dict, Any, Optional
 import io
 import requests
 from types import SimpleNamespace
+from api.validation import validate_file_url
 
 try:
     from celery import Celery, Task
@@ -552,6 +553,7 @@ def analyze_document_task(
             extracted_text = extract_text_from_pdf(io.BytesIO(file_bytes))
         if not extracted_text:
             if file_url:
+                validate_file_url(file_url)
                 response = requests.get(file_url, timeout=30)
                 response.raise_for_status()
                 if len(response.content) > ValidationConfig.MAX_TEXT_LENGTH:

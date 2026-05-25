@@ -18,6 +18,7 @@ except Exception:
     enqueue_task_from_http_request = None
 from api.validation import (
     validate_file_upload,
+    validate_file_url,
     validate_text_input,
     validate_file_upload_streaming,
     ValidationConfig,
@@ -61,6 +62,10 @@ async def analyze_document(
     # Validate text input if provided
     if request.text:
         validate_text_input(request.text, max_length=ValidationConfig.MAX_TEXT_LENGTH)
+
+    # SSRF validation: block private/internal IPs for file_url
+    if request.file_url:
+        validate_file_url(request.file_url)
     
     # Generate document ID and job ID
     document_id = str(uuid.uuid4())
