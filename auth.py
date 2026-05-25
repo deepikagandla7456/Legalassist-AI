@@ -152,7 +152,7 @@ def send_otp_email(email: str, otp: str) -> bool:
         from_email = os.getenv("SENDGRID_FROM_EMAIL", "noreply@legalassist.ai")
 
         if not api_key or sendgrid is None:
-            if _is_debug_or_testing_mode():
+            if _is_debug_or_testing_mode() and not Config.is_production():
 
                 logger.warning("SendGrid API key not configured or sendgrid package not installed - using masked OTP logging for debug/test mode")
                 logger.debug("OTP generated: [MASKED]")
@@ -213,7 +213,7 @@ def send_otp_email(email: str, otp: str) -> bool:
             recipient=mask_email(email),
             error=sanitize_log_text(str(e)),
         )
-        if _is_debug_or_testing_mode():
+        if _is_debug_or_testing_mode() and not Config.is_production():
             logger.debug("OTP delivery simulated: [MASKED]")
             logger.debug("otp_delivery_debug_mode", recipient=mask_email(email), transport="sendgrid")
             return True
