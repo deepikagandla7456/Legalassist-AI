@@ -71,17 +71,23 @@ SSOConfig.from_env()
 
 _oauth = OAuth()
 
+_state_secret: str = ""
+
 
 def _get_state_secret() -> str:
     """Return a shared secret for HMAC-signing OAuth state tokens.
 
     Uses the CSRF secret so that all workers share the same key.
+    Falls back to a per-process random value cached at module scope.
     """
+    global _state_secret
+    if _state_secret:
+        return _state_secret
     import os
-    secret = os.getenv("CSRF_SECRET") or os.getenv("SECRET_KEY") or ""
-    if not secret:
-        secret = secrets.token_hex(32)
-    return secret
+    _state_secret = os.getenv("CSRF_SECRET") or os.getenv("SECRET_KEY") or ""
+    if not _state_secret:
+        _state_secret = secrets.token_hex(32)
+    return _state_secret
 
 
 def _generate_state(provider: str, redirect_uri: str) -> str:
