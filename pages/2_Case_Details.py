@@ -868,7 +868,11 @@ def main():
 
                 if st.button("Show Share ID", use_container_width=True):
                     st.success(f"✅ Anonymized ID: `{anon_id}`")
-                    st.info("Share this ID with lawyers to show anonymized case details (feature coming soon)")
+                    st.info(
+                        "Share this ID with your lawyer. They can view the "
+                        "anonymized case at the **View Shared Case** page, "
+                        "or by entering the ID at `/6_Shared_Case`."
+                    )
 
 
 if __name__ == "__main__":
