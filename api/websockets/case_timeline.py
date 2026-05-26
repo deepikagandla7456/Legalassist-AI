@@ -9,11 +9,11 @@ import asyncio
 from contextlib import suppress
 from typing import Optional
 
-import jwt
 import structlog
 from fastapi import FastAPI, WebSocket
 from fastapi import Depends
 from api.config import get_settings
+from api.jwt_auth import verify_token, InvalidTokenError as JWTInvalidTokenError, TokenExpiredError as JWTTokenExpiredError
 from api.limiter import enforce_rate_limit, RateLimitExceeded
 from core.timeline_payloads import TimelineEventPayload
 from db.models.cases import Case
@@ -25,58 +25,6 @@ logger = structlog.get_logger(__name__)
 
 
 settings = get_settings()
-
-
-class TokenExpiredError(Exception):
-    pass
-
-
-class InvalidTokenError(Exception):
-    pass
-
-
-class AuthError(Exception):
-    pass
-
-
-def _verify_token(token: str) -> dict:
-    secrets_to_try = [settings.JWT_SECRET_KEY, settings.JWT_SECRET_KEY_PREVIOUS]
-    secrets_to_try = [s for s in secrets_to_try if s and len(s.strip()) >= 16]
-
-    payload = None
-    last_error = None
-    for secret in secrets_to_try:
-        try:
-            payload = jwt.decode(
-                token,
-                secret,
-                algorithms=[settings.JWT_ALGORITHM],
-                issuer=settings.JWT_ISSUER,
-                audience=settings.JWT_AUDIENCE,
-                options={"require": ["exp", "iat", "nbf", "iss", "aud", "jti", "type"], "verify_nbf": True},
-            )
-            break
-        except jwt.ExpiredSignatureError as exc:
-            last_error = exc
-        except jwt.InvalidTokenError as exc:
-            last_error = exc
-            continue
-
-    if payload is None:
-        if isinstance(last_error, jwt.ExpiredSignatureError):
-            raise TokenExpiredError("Token has expired") from last_error
-        raise InvalidTokenError(str(last_error) if last_error else "Invalid token")
-
-    if payload.get("type") != "access":
-        raise InvalidTokenError("Invalid token type")
-
-    jti = payload.get("jti")
-    if jti:
-        from api.jwt_auth import _is_token_revoked_cached
-        if _is_token_revoked_cached(jti):
-            logger.warning("websocket_token_revoked", jti=jti)
-            raise InvalidTokenError("Token has been revoked")
-    return payload
 
 
 def parse_auth_from_websocket(websocket: WebSocket) -> Optional[str]:
@@ -151,12 +99,12 @@ def register_case_timeline_endpoint(app: FastAPI) -> None:
             await websocket.close(code=4001, reason="Authentication required")
             return
         try:
-            payload = _verify_token(auth_token)
+            payload = verify_token(auth_token)
             user_id = payload.get("sub")
             if not user_id:
                 await websocket.close(code=4003, reason="Invalid token")
                 return
-        except (TokenExpiredError, InvalidTokenError, AuthError):
+        except (JWTTokenExpiredError, JWTInvalidTokenError):
             await websocket.close(code=4001, reason="Invalid or expired token")
             return
 
