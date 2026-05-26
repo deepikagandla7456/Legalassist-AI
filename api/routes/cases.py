@@ -573,6 +573,9 @@ async def list_cases(
 ) -> dict:
     """Get list of cases for current user"""
     
+    limit = min(limit, 100)
+    offset = max(offset, 0)
+    
     logger.info(
         "Listing user cases",
         user_id=current_user.user_id,
