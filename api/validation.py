@@ -94,6 +94,7 @@ class ValidationConfig:
     MAX_BATCH_SIZE: int = 100
     MAX_ANALYTICS_PAYLOAD: int = 100 * 1024 * 1024
     MAX_JSON_BODY: int = 10 * 1024 * 1024
+    MAX_BASE64_DECODED_BYTES: int = 25 * 1024 * 1024  # 25 MB
 
     @classmethod
     def from_settings(cls, settings):
@@ -110,6 +111,20 @@ class ValidationError(HTTPException):
 class PayloadTooLargeError(HTTPException):
     def __init__(self, detail: str):
         super().__init__(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=detail)
+
+
+def decode_base64_safe(data: str, max_decoded_bytes: int = ValidationConfig.MAX_BASE64_DECODED_BYTES) -> bytes:
+    """Decode base64 string with decoded-size validation to prevent memory exhaustion."""
+    # Base64 encodes 3 bytes into 4 characters; estimate max_input_len safely
+    max_input_len = ((max_decoded_bytes + 2) // 3) * 4
+    if len(data) > max_input_len:
+        raise PayloadTooLargeError(
+            f"Base64 payload exceeds maximum decoded size of {max_decoded_bytes // (1024 * 1024)} MB"
+        )
+    try:
+        return base64.b64decode(data)
+    except Exception as exc:
+        raise ValidationError(f"Invalid base64 encoding: {exc}")
 
 
 def validate_magic_bytes(file_content: bytes, expected_extension: str) -> Tuple[bool, str]:
