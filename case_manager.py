@@ -930,6 +930,17 @@ def _update_case_status(user_id: int, case_id: int, status: CaseStatus) -> bool:
             metadata={"new_status": status.value},
         )
 
+        record_immutable_audit_event(
+            event_type="case.status_changed",
+            action="status_change",
+            actor_user_id=user_id,
+            resource_type="case",
+            resource_id=str(case_id),
+            outcome="success",
+            case_id=case_id,
+            metadata={"new_status": status.value},
+        )
+
         logger.info(f"Updated case {case_id} status to {status.value}")
         return True
 
