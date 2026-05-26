@@ -199,18 +199,25 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
         csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
 
         if request.method in SAFE_METHODS and not csrf_cookie:
-            session_id = secrets.token_urlsafe(16)
-            token = generate_csrf_token(int(user_id) if str(user_id).isdigit() else 0, session_id)
-            response.set_cookie(
-                CSRF_COOKIE_NAME,
-                token,
-                httponly=True,
-                samesite="lax",
-                secure=True,
-                path="/",
-                max_age=3600 * 8,
-            )
-            response.headers["X-CSRF-Token"] = token
+            if access_token:
+                try:
+                    payload = verify_token(access_token)
+                    resolved_user_id = int(payload.get("sub"))
+                    jwt_jti = payload.get("jti")
+                    if resolved_user_id is not None and jwt_jti:
+                        token = generate_csrf_token(resolved_user_id, jwt_jti)
+                        response.set_cookie(
+                            CSRF_COOKIE_NAME,
+                            token,
+                            httponly=True,
+                            samesite="lax",
+                            secure=True,
+                            path="/",
+                            max_age=3600 * 8,
+                        )
+                        response.headers["X-CSRF-Token"] = token
+                except Exception:
+                    pass
             return response
 
         if request.method not in SAFE_METHODS and (user_id or access_token):
@@ -224,9 +231,8 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
                 except Exception:
                     resolved_user_id = None
 
-            if resolved_user_id is not None:
-                session_id = jwt_jti or secrets.token_urlsafe(16)
-                token = generate_csrf_token(resolved_user_id, session_id)
+            if resolved_user_id is not None and jwt_jti:
+                token = generate_csrf_token(resolved_user_id, jwt_jti)
                 response.set_cookie(
                     CSRF_COOKIE_NAME,
                     token,
