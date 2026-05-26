@@ -334,24 +334,6 @@ async def list_reports(
         offset=offset,
         status=status_filter
     )
-    
-    report_dicts = [
-        {
-            "report_id": r.report_id,
-            "case_id": r.case_id,
-            "status": r.status.value,
-            "report_type": r.report_type.value,
-            "format": r.format.value,
-            "file_size_bytes": r.file_size_bytes,
-            "created_at": r.created_at.isoformat(),
-            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        }
-        for r in reports
-    ]
-    
-    query = db.query(Report).filter(Report.user_id == current_user.user_id)
-    total = query.count()
-    reports = query.order_by(Report.created_at.desc()).offset(offset).limit(limit).all()
 
     reports_data = []
     for r in reports:
@@ -380,7 +362,7 @@ async def list_reports(
             "created_at": r.created_at,
             "completed_at": r.completed_at
         })
-        
+
     return {
         "total": total,
         "limit": limit,
