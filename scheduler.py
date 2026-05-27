@@ -299,6 +299,7 @@ def check_and_send_reminders():
         init_db()
 
         db = SessionLocal()
+        sent_count = 0
         try:
             candidates = get_reminder_dispatch_candidates(
                 db,
@@ -308,9 +309,34 @@ def check_and_send_reminders():
             )
             logger.info("scheduler_reminder_candidates_found", count=len(candidates))
 
-            sent_count = 0
+            # Prefetch user preferences for eligible deadlines to avoid N+1 queries
+            eligible = []
+            for dl in upcoming_deadlines:
+                days_left = dl.days_until_deadline()
+                if should_process_threshold(days_left):
+                    eligible.append((dl, days_left))
 
-            for deadline, days_left, user_preference in candidates:
+            user_ids = {d.user_id for d, _ in eligible}
+            prefs_by_user = {}
+            if user_ids:
+                prefs = db.query(UserPreference).filter(UserPreference.user_id.in_(list(user_ids))).all()
+                prefs_by_user = {p.user_id: p for p in prefs}
+
+            for deadline, days_left in eligible:
+                user_preference = prefs_by_user.get(deadline.user_id)
+                if not user_preference:
+                    logger.warning("scheduler_preferences_missing", user_id=deadline.user_id)
+                    continue
+
+                # Check if reminders should be sent based on preferences and time
+                if not is_notify_enabled(days_left, user_preference):
+                    logger.debug("scheduler_notifications_disabled", user_id=deadline.user_id, days_left=days_left)
+                    continue
+
+                if not is_reminder_time_for_user(user_preference.timezone):
+                    logger.debug("scheduler_waiting_for_reminder_window", user_id=deadline.user_id, user_timezone=user_preference.timezone)
+                    continue
+
                 logger.info("scheduler_processing_deadline", case_id=deadline.case_id, days_left=days_left)
 
                 results = _send_deadline_reminders_safe(db, deadline, user_preference, days_left)

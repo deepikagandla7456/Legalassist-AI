@@ -76,4 +76,4 @@ class NotificationLog(Base):
     failed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
-    deadline = relationship("CaseDeadline", back_populates="notifications")
+    deadline = relationship("db.models.cases.CaseDeadline", back_populates="notifications")

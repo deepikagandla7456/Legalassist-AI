@@ -296,7 +296,7 @@ class NotificationLog(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
     # Relationships
-    deadline = relationship("CaseDeadline", back_populates="notifications")
+    deadline = relationship("database.CaseDeadline", back_populates="notifications")
 
     def __repr__(self):
         return f"<NotificationLog(user_id={self.user_id}, status={self.status}, channel={self.channel})>"
@@ -344,7 +344,7 @@ class CaseRecord(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     # Relationships
-    outcome_data = relationship("CaseOutcome", back_populates="case_record", uselist=False, cascade="all, delete-orphan")
+    outcome_data = relationship("db.models.analytics.CaseOutcome", back_populates="case_record", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<CaseRecord(case_type={self.case_type}, jurisdiction={self.jurisdiction}, outcome={self.outcome})>"
@@ -368,7 +368,7 @@ class CaseOutcome(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     # Relationships
-    case_record = relationship("CaseRecord", back_populates="outcome_data")
+    case_record = relationship("database.CaseRecord", back_populates="outcome_data")
 
     def __repr__(self):
         return f"<CaseOutcome(case_id={self.case_id}, appeal_filed={self.appeal_filed}, appeal_success={self.appeal_success})>"
@@ -465,7 +465,7 @@ class ModelFeedback(Base):
     feedback_notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
-    case = relationship("CaseRecord")
+    case = relationship("database.CaseRecord")
 
     def __repr__(self):
         return f"<ModelFeedback(model={self.model_name}, task={self.task}, accurate={self.is_accurate})>"
@@ -523,7 +523,7 @@ class SimilarityFeedback(Base):
     relevance = Column(Boolean, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
-    candidate_case = relationship("CaseRecord")
+    candidate_case = relationship("database.CaseRecord")
 
     def __repr__(self):
         return (
@@ -919,8 +919,8 @@ class CaseDocument(Base):
     ocr_used = Column(Boolean, default=False, nullable=False)
 
     # Relationships
-    case = relationship("Case", back_populates="documents")
-    attachment = relationship("Attachment", foreign_keys=[source_attachment_id])
+    case = relationship("db.models.cases.Case", back_populates="documents")
+    attachment = relationship("db.models.cases.Attachment", foreign_keys=[source_attachment_id])
 
     def __repr__(self):
         return f"<CaseDocument(case_id={self.case_id}, type={self.document_type})>"
@@ -942,8 +942,8 @@ class Attachment(Base):
     uploaded_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
     # Relationships
-    case = relationship("Case", back_populates="attachments")
-    deadline = relationship("CaseDeadline", back_populates="attachments")
+    case = relationship("db.models.cases.Case", back_populates="attachments")
+    deadline = relationship("db.models.cases.CaseDeadline", back_populates="attachments")
 
     def __repr__(self):
         return f"<Attachment(id={self.id}, user_id={self.user_id}, filename={self.original_filename})>"
@@ -963,7 +963,7 @@ class CaseTimeline(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
     # Relationships
-    case = relationship("Case", back_populates="timeline_events")
+    case = relationship("db.models.cases.Case", back_populates="timeline_events")
 
     def __repr__(self):
         return f"<CaseTimeline(case_id={self.case_id}, event_type={self.event_type})>"
@@ -1042,8 +1042,8 @@ class CaseEmbedding(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     # Relationships
-    case = relationship("Case")
-    document = relationship("CaseDocument")
+    case = relationship("db.models.cases.Case")
+    document = relationship("db.models.cases.CaseDocument")
 
     def __repr__(self):
         return f"<CaseEmbedding(case_id={self.case_id}, model={self.embedding_model})>"
@@ -1073,9 +1073,9 @@ class CaseIssue(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     # Relationships
-    case = relationship("Case")
-    document = relationship("CaseDocument")
-    arguments = relationship("CaseArgument", back_populates="issue", cascade="all, delete-orphan")
+    case = relationship("db.models.cases.Case")
+    document = relationship("db.models.cases.CaseDocument")
+    arguments = relationship("database.CaseArgument", back_populates="issue", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("case_id", "issue_name", name="uq_case_issue"), {"extend_existing": True})
 
@@ -1106,8 +1106,8 @@ class CaseArgument(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
     # Relationships
-    case = relationship("Case")
-    issue = relationship("CaseIssue", back_populates="arguments")
+    case = relationship("db.models.cases.Case")
+    issue = relationship("database.CaseIssue", back_populates="arguments")
 
     def __repr__(self):
         return f"<CaseArgument(case_id={self.case_id}, type={self.argument_type})>"
@@ -1137,9 +1137,9 @@ class KnowledgeGraphEdge(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     # Relationships
-    issue = relationship("CaseIssue")
-    argument = relationship("CaseArgument")
-    case = relationship("Case")
+    issue = relationship("database.CaseIssue")
+    argument = relationship("database.CaseArgument")
+    case = relationship("db.models.cases.Case")
 
     __table_args__ = (UniqueConstraint("issue_id", "argument_id", "case_id", name="uq_graph_edge"), {"extend_existing": True})
 
@@ -1178,8 +1178,8 @@ class PrecedentMatch(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)  # Cache expiration
 
     # Relationships
-    query_case = relationship("Case", foreign_keys=[query_case_id])
-    precedent_case = relationship("Case", foreign_keys=[precedent_case_id])
+    query_case = relationship("db.models.cases.Case", foreign_keys=[query_case_id])
+    precedent_case = relationship("db.models.cases.Case", foreign_keys=[precedent_case_id])
 
     __table_args__ = (UniqueConstraint("query_case_id", "precedent_case_id", "match_type", name="uq_precedent_match"), {"extend_existing": True})
 

@@ -114,8 +114,8 @@ class CaseDocument(Base):
     extraction_method = Column(String(50), nullable=True)
     ocr_used = Column(Boolean, default=False, nullable=False)
 
-    case = relationship("Case", back_populates="documents")
-    attachment = relationship("Attachment", foreign_keys=[source_attachment_id])
+    case = relationship("db.models.cases.Case", back_populates="documents")
+    attachment = relationship("db.models.cases.Attachment", foreign_keys=[source_attachment_id])
 
 
 class Attachment(Base):
@@ -134,8 +134,8 @@ class Attachment(Base):
     is_encrypted = Column(Boolean, default=False, nullable=False)
     wrapped_key = Column(Text, nullable=True)
 
-    case = relationship("Case", back_populates="attachments")
-    deadline = relationship("CaseDeadline", back_populates="attachments")
+    case = relationship("db.models.cases.Case", back_populates="attachments")
+    deadline = relationship("db.models.cases.CaseDeadline", back_populates="attachments")
 
 
 class CaseTimeline(Base):
@@ -149,7 +149,7 @@ class CaseTimeline(Base):
     event_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
 
-    case = relationship("Case", back_populates="timeline_events")
+    case = relationship("db.models.cases.Case", back_populates="timeline_events")
 
 
 class CaseNote(Base):
@@ -166,8 +166,8 @@ class CaseNote(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
-    case = relationship("Case", back_populates="notes")
-    versions = relationship("CaseNoteVersion", back_populates="note", cascade="all, delete-orphan", order_by="CaseNoteVersion.version_number")
+    case = relationship("db.models.cases.Case", back_populates="notes")
+    versions = relationship("db.models.cases.CaseNoteVersion", back_populates="note", cascade="all, delete-orphan", order_by="db.models.cases.CaseNoteVersion.version_number")
 
 
 class CaseNoteVersion(Base):
