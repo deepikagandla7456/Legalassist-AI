@@ -127,12 +127,29 @@ def _consume_state(state: str) -> Optional[dict]:
 def _get_or_create_user(email: str, name: str, provider: str, provider_id: str) -> User:
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email).first()
+        user = db.query(User).filter(
+            User.sso_provider == provider,
+            User.sso_provider_id == provider_id,
+        ).first()
         if user:
             if hasattr(user, "last_login"):
                 user.last_login = datetime.now(timezone.utc)
             db.commit()
             return user
+
+        existing = db.query(User).filter(User.email == email).first()
+        if existing:
+            if existing.sso_provider is not None and existing.sso_provider != provider:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to a different SSO provider. Contact support to merge accounts.",
+                )
+            existing.sso_provider = provider
+            existing.sso_provider_id = provider_id
+            existing.last_login = datetime.now(timezone.utc)
+            db.commit()
+            logger.info("sso_user_linked", email=mask_email(email), provider=provider)
+            return existing
 
         if not SSOConfig.AUTO_PROVISION_USERS:
             raise HTTPException(
@@ -144,6 +161,8 @@ def _get_or_create_user(email: str, name: str, provider: str, provider_id: str) 
         user = User(
             email=email,
             role=UserRole.CLIENT,
+            sso_provider=provider,
+            sso_provider_id=provider_id,
         )
         db.add(user)
         db.commit()
