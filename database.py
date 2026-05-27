@@ -2293,3 +2293,22 @@ def get_user_stats(db: Session, user_id: int) -> dict:
 
 
 
+
+
+def register_slow_query_listener(engine, threshold_seconds=2.0):
+    """
+    Registers event listeners on the SQLAlchemy engine to log warnings 
+    whenever a database query takes longer than the threshold_seconds.
+    """
+    from sqlalchemy import event
+    import time
+    
+    @event.listens_for(engine, "before_cursor_execute")
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        context._query_start_time = time.time()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        total_time = time.time() - context._query_start_time
+        if total_time > threshold_seconds:
+            logger.warning("slow_database_query_detected", query=statement, duration_seconds=total_time)
