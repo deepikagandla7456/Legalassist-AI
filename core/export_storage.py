@@ -4,6 +4,7 @@ Saves exported files to local directory with metadata.
 """
 
 import os
+import re
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,8 @@ from typing import Optional
 import structlog
 
 from config import Config
+
+_ALLOWED_EXPORT_FORMATS = frozenset({"csv", "json", "pdf", "xlsx"})
 
 logger = structlog.get_logger(__name__)
 
@@ -48,18 +51,27 @@ def save_export_file(
         RuntimeError: If file cannot be saved
     """
     try:
+        if not re.match(r"^\d+$", str(user_id)):
+            raise ValueError(f"Invalid user_id: {user_id!r}")
+
+        clean_format = str(format).strip().lower()
+        if clean_format not in _ALLOWED_EXPORT_FORMATS:
+            raise ValueError(f"Unsupported export format: {format!r}")
+
         export_id = export_id or str(uuid.uuid4())
         created_at = datetime.now(timezone.utc)
-        expires_at = created_at + timedelta(hours=Config.EXPORT_FILE_EXPIRY_HOURS)
+        expires_at = created_at + timedelta(hours=getattr(Config, "EXPORT_FILE_EXPIRY_HOURS", 24))
         
-        # Create user export directory
-        base_dir = Path(Config.EXPORTS_DIR)
+        base_dir = Path(getattr(Config, "EXPORTS_DIR", "./exports")).resolve()
         user_dir = base_dir / str(user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save file
-        file_name = f"export_{export_id}.{format}"
-        file_path = user_dir / file_name
+        file_name = f"export_{export_id}.{clean_format}"
+        file_path = (user_dir / file_name).resolve()
+
+        if not str(file_path).startswith(str(base_dir)):
+            raise ValueError(f"File path escapes export directory: {file_path}")
+
         file_path.write_bytes(file_bytes)
         
         logger.info(
