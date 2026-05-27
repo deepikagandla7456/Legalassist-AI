@@ -121,7 +121,17 @@ def _validate_encoding_quality(text: str) -> Tuple[bool, float]:
     # We consider it valid if quality score is at least 0.5 and replacement ratio is under 15%
     is_valid = quality >= 0.5 and replacement_ratio < 0.15
     
+    # Additional check: detect fragmented text where words are split into single characters
+    # e.g., "J u d g m e n t  o f  t h e  C o u r t"
+    words = [w for w in text.split() if w]
+    if len(words) > 15:
+        avg_word_len = sum(len(w) for w in words) / len(words)
+        if avg_word_len < 2.0:
+            is_valid = False
+            quality = min(quality, 0.3)
+            
     return is_valid, quality
+
 
 
 def _extract_pages_pypdf(reader: PdfReader) -> str:
