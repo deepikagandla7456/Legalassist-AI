@@ -101,6 +101,7 @@ class TimelineRealtimeBus:
         self._drop_lock = threading.Lock()
         self._dropped_messages_total = 0
         self._dropped_connections_total = 0
+        self._rate_limiter = _SlidingWindowRateLimiter()
 
     @property
     def queue_maxsize(self) -> int:

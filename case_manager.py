@@ -56,6 +56,7 @@ from database import (
     get_attachments_for_case,
     save_case_note_draft,
 )
+from db.case_service import get_case_note, publish_case_note, get_case_note_history
 from services.timeline_service import timeline_service as _timeline_service
 from services.deadlines_auto_creator import (
     _extract_days_from_text as _extract_days_from_text_service,
@@ -1128,3 +1129,18 @@ def delete_user_cases(user_id: int, case_ids: List[int], confirm: bool = False) 
 # =============================================================================
 # END OF SERVICE
 # =============================================================================
+
+
+def validate_case_transition(current_status: str, target_status: str) -> bool:
+    """
+    Validates if a transition from current case status to target case status 
+    is permitted under standard case lifecycle rules.
+    """
+    allowed_transitions = {
+        "pending": ["active", "dismissed"],
+        "active": ["settled", "dismissed", "appealed"],
+        "appealed": ["active", "dismissed"],
+        "settled": [],
+        "dismissed": []
+    }
+    return target_status in allowed_transitions.get(current_status, [])

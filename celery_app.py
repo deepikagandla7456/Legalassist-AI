@@ -1671,3 +1671,19 @@ def purge_expired_data(self) -> Dict[str, Any]:
 
         logger.info("purge_expired_data_completed", results=results)
         return {"status": "completed", "purged": results}
+
+
+def setup_celery_worker_signals(app):
+    """
+    Attaches critical logging signals to the Celery app lifecycle 
+    to facilitate easy debugging of memory leaks or connection loss.
+    """
+    from celery.signals import worker_process_init, worker_process_shutdown
+
+    @worker_process_init.connect
+    def init_worker_process(**kwargs):
+        logger.info("celery_worker_process_initialized")
+
+    @worker_process_shutdown.connect
+    def shutdown_worker_process(**kwargs):
+        logger.info("celery_worker_process_shutting_down")
