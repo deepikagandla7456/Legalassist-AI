@@ -35,8 +35,8 @@ class KnowledgeInvalidation(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
     user = relationship("db.models.auth.User")
-    case = relationship("db.models.cases.Case")
-    document = relationship("db.models.cases.CaseDocument")
+    case = relationship("Case")
+    document = relationship("CaseDocument")
 
     __table_args__ = (
         Index("ix_knowledge_invalidations_scope", "scope_type", "scope_value", "status"),

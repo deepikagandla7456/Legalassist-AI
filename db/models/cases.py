@@ -49,9 +49,9 @@ class CaseDeadline(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
     is_completed = Column(Boolean, default=False, index=True)
 
-    case = relationship("db.models.cases.Case", back_populates="deadlines")
+    case = relationship("Case", back_populates="deadlines")
     notifications = relationship("db.models.notifications.NotificationLog", back_populates="deadline")
-    attachments = relationship("db.models.cases.Attachment", back_populates="deadline")
+    attachments = relationship("Attachment", back_populates="deadline")
 
     def days_until_deadline(self) -> int:
         from db.session import _to_utc_datetime
@@ -89,7 +89,7 @@ class Case(Base):
         "version_id_col": version
     }
 
-    user = relationship("User", back_populates="cases")
+    user = relationship("db.models.auth.User", back_populates="cases")
     documents = relationship("CaseDocument", back_populates="case", cascade="all, delete-orphan")
     deadlines = relationship("CaseDeadline", back_populates="case", cascade="all, delete-orphan")
     timeline_events = relationship("CaseTimeline", back_populates="case", cascade="all, delete-orphan")

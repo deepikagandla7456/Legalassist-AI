@@ -24,4 +24,4 @@ class AuditEvent(Base):
     notes = Column(Text, nullable=True)
 
     actor_user = relationship("db.models.auth.User")
-    case = relationship("db.models.cases.Case")
+    case = relationship("Case")

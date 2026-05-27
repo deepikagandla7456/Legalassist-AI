@@ -225,9 +225,9 @@ class CaseDeadline(Base):
     is_completed = Column(Boolean, default=False, index=True)
 
     # Relationships
-    case = relationship("db.models.cases.Case", back_populates="deadlines")
+    case = relationship("Case", back_populates="deadlines")
     notifications = relationship("database.NotificationLog", back_populates="deadline", cascade="all, delete-orphan")
-    attachments = relationship("db.models.cases.Attachment", back_populates="deadline", cascade="all, delete-orphan")
+    attachments = relationship("Attachment", back_populates="deadline", cascade="all, delete-orphan")
 
     def days_until_deadline(self) -> int:
         """Calculate days remaining until deadline"""
@@ -270,7 +270,7 @@ class UserPreference(Base):
 
 
     # Relationships
-    user = relationship("db.models.auth.User", back_populates="preferences")
+    user = relationship("database.User", back_populates="preferences")
 
     def __repr__(self):
         return f"<UserPreference(user_id={self.user_id}, channel={self.notification_channel})>"
@@ -889,13 +889,13 @@ class Case(Base):
     }
 
     # Relationships
-    user = relationship("db.models.auth.User", back_populates="cases")
-    documents = relationship("db.models.cases.CaseDocument", back_populates="case", cascade="all, delete-orphan", order_by="db.models.cases.CaseDocument.uploaded_at")
-    deadlines = relationship("db.models.cases.CaseDeadline", back_populates="case", cascade="all, delete-orphan")
-    timeline_events = relationship("db.models.cases.CaseTimeline", back_populates="case", cascade="all, delete-orphan")
-    attachments = relationship("db.models.cases.Attachment", back_populates="case", cascade="all, delete-orphan", order_by="db.models.cases.Attachment.uploaded_at")
-    comments = relationship("db.models.cases.CaseComment", back_populates="case", cascade="all, delete-orphan", order_by="db.models.cases.CaseComment.created_at")
-    presence_updates = relationship("db.models.cases.CasePresence", back_populates="case", cascade="all, delete-orphan")
+    user = relationship("database.User", back_populates="cases")
+    documents = relationship("CaseDocument", back_populates="case", cascade="all, delete-orphan", order_by="CaseDocument.uploaded_at")
+    deadlines = relationship("CaseDeadline", back_populates="case", cascade="all, delete-orphan")
+    timeline_events = relationship("CaseTimeline", back_populates="case", cascade="all, delete-orphan")
+    attachments = relationship("Attachment", back_populates="case", cascade="all, delete-orphan", order_by="Attachment.uploaded_at")
+    comments = relationship("CaseComment", back_populates="case", cascade="all, delete-orphan", order_by="CaseComment.created_at")
+    presence_updates = relationship("CasePresence", back_populates="case", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Case(case_number={self.case_number}, status={self.status})>"
@@ -983,10 +983,10 @@ class CaseComment(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False, index=True)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
-    case = relationship("db.models.cases.Case", back_populates="comments")
-    user = relationship("db.models.auth.User", back_populates="case_comments")
-    parent_comment = relationship("db.models.cases.CaseComment", remote_side=[id], back_populates="replies")
-    replies = relationship("db.models.cases.CaseComment", back_populates="parent_comment", cascade="all, delete-orphan")
+    case = relationship("Case", back_populates="comments")
+    user = relationship("database.User", back_populates="case_comments")
+    parent_comment = relationship("CaseComment", remote_side=[id], back_populates="replies")
+    replies = relationship("CaseComment", back_populates="parent_comment", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<CaseComment(case_id={self.case_id}, user_id={self.user_id})>"
@@ -1006,8 +1006,8 @@ class CasePresence(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
-    case = relationship("db.models.cases.Case", back_populates="presence_updates")
-    user = relationship("db.models.auth.User", back_populates="case_presence")
+    case = relationship("Case", back_populates="presence_updates")
+    user = relationship("database.User", back_populates="case_presence")
 
     __table_args__ = (UniqueConstraint("case_id", "user_id", name="uq_case_presence_user"), {"extend_existing": True})
 
