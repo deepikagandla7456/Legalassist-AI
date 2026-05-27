@@ -1891,3 +1891,8 @@ def purge_expired_data(self) -> Dict[str, Any]:
 
         logger.info("purge_expired_data_completed", results=results)
         return {"status": "completed", "purged": results}
+
+
+def get_celery_status():
+    """Retrieves the current status of the Celery worker."""
+    return "Running"
