@@ -192,7 +192,6 @@ class AnonymizedShareToken(Base):
     __table_args__ = (
         UniqueConstraint("token", name="uq_anonymized_share_tokens_token"),
         Index("ix_anonymized_share_tokens_token", "token"),
-        Index("ix_anonymized_share_tokens_case_id", "case_id"),
     )
 
     id = Column(Integer, primary_key=True)
