@@ -33,7 +33,6 @@ from services.privacy_redaction import normalize_privacy_profile
 from database import (
     CaseRecord,
     CaseOutcome,
-    get_db,
     submit_similarity_feedback,
     Case,
     DocumentType,
@@ -41,6 +40,7 @@ from database import (
     Attachment,
     AnonymizedShareToken,
 )
+from api.dependencies import get_db_rls
 from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
 from db.repositories.case_queries import fetch_latest_documents_per_case
 from db.crud.audit import record_immutable_audit_event
@@ -186,7 +186,7 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
 async def search_cases(
     request: CaseSearchRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_rls)
 ) -> CaseSearchResponse:
     """
     Search for similar cases in database
@@ -354,7 +354,7 @@ async def search_cases(
 async def submit_similarity_result_feedback(
     request: SimilarityFeedbackRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_rls)
 ) -> SimilarityFeedbackResponse:
     """Persist user feedback for a similarity search result."""
     query_signature = request.query_signature or ""
@@ -431,7 +431,7 @@ def _build_case_timeline_payload(case: Case, timeline_events) -> dict:
 async def get_case_timeline(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_rls),
 ) -> CaseTimeline:
     """Get case history and timeline."""
     logger.info(
@@ -454,7 +454,7 @@ async def get_case_timeline(
 async def get_case_details(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_rls)
 ) -> dict:
     """Get complete case details"""
     
@@ -585,7 +585,7 @@ async def upload_case_document_endpoint(
     file: UploadFile = File(...),
     document_type: str = Form(default="Other"),
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_rls),
 ) -> dict:
     """Store an upload, create linked attachment/document rows, and queue OCR extraction."""
     case = get_owned_case(case_id, current_user, db)
@@ -655,7 +655,7 @@ async def save_case_note_draft_endpoint(
     case_id: str,
     request: CaseNoteDraftRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_rls),
 ) -> dict:
     case = get_owned_case(case_id, current_user, db)
     case_id_int = case.id
@@ -685,7 +685,7 @@ async def publish_case_note_endpoint(
     case_id: str,
     request: CaseNotePublishRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_rls),
 ) -> dict:
     case = get_owned_case(case_id, current_user, db)
     case_id_int = case.id
@@ -717,7 +717,7 @@ async def publish_case_note_endpoint(
 async def get_case_note_history_endpoint(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db_rls),
 ) -> CaseNoteHistoryResponse:
     case = get_owned_case(case_id, current_user, db)
     case_id_int = case.id
@@ -752,9 +752,12 @@ async def list_cases(
     limit: int = 10,
     offset: int = 0,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_rls)
 ) -> dict:
     """Get list of cases for current user"""
+    
+    limit = min(limit, 100)
+    offset = max(offset, 0)
     
     logger.info(
         "Listing user cases",
@@ -794,3 +797,4 @@ async def list_cases(
         "offset": offset,
         "cases": cases_list
     }
+
