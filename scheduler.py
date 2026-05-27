@@ -197,9 +197,10 @@ def distributed_lock(lock_key: str, ttl_seconds: int = 300, lock_id: Optional[st
         yield acquired
     finally:
         if acquired:
-            current_holder = redis_client.get(lock_key)
-            if current_holder == lock_id:
-                redis_client.delete(lock_key)
+            redis_client.eval(
+                """if redis.call("GET",KEYS[1])==ARGV[1] then return redis.call("DEL",KEYS[1]) end return 0""",
+                1, lock_key, lock_id,
+            )
 
 
 def _shutdown_scheduler_instance(scheduler, *, wait: bool = True):
