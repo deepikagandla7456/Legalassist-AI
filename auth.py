@@ -396,13 +396,11 @@ def verify_password_and_create_token(email: str, password: str) -> Tuple[bool, s
         user = get_user_by_email(db, email)
         
         if not user or not user.password_hash:
-            # We return generic message to prevent user enumeration
-            logger.warning("password_login_failed", recipient=mask_email(email), reason="user_not_found_or_no_password")
+            logger.warning("password_login_failed", recipient=mask_email(email), reason="invalid_credentials")
             return False, "Invalid email or password.", None
 
-        # Verify password using bcrypt (cost=14)
         if not verify_password(password, user.password_hash):
-            logger.warning("password_login_failed", recipient=mask_email(email), reason="invalid_password")
+            logger.warning("password_login_failed", recipient=mask_email(email), reason="invalid_credentials")
             return False, "Invalid email or password.", None
 
         # Update last login
