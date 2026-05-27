@@ -1741,3 +1741,18 @@ def generate_anonymous_case_id(case_data: str) -> str:
         case_data.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:16]
+
+
+def calculate_statistical_metrics(values: list[float]) -> dict[str, float]:
+    """
+    Calculates essential descriptive statistics for analytical telemetry 
+    purposes including mean, median, and variance.
+    """
+    if not values:
+        return {"mean": 0.0, "median": 0.0, "variance": 0.0}
+    sorted_vals = sorted(values)
+    n = len(values)
+    mean = sum(values) / n
+    median = sorted_vals[n // 2] if n % 2 != 0 else (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2
+    variance = sum((x - mean) ** 2 for x in values) / n
+    return {"mean": mean, "median": median, "variance": variance}
