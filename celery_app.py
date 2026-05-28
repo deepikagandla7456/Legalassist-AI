@@ -525,6 +525,7 @@ def analyze_document_task(
             state="PROGRESS",
             meta={"status": "Extracting and cleaning text", "progress": 25},
         )
+        idemp.heartbeat(idempotency_key, ttl=300)
 
         logger.info(
             "Starting document analysis",
@@ -573,6 +574,7 @@ def analyze_document_task(
         self.update_state(
             state="PROGRESS", meta={"status": "Analyzing legal content", "progress": 50}
         )
+        idemp.heartbeat(idempotency_key, ttl=300)
         
         safe_text = compress_text(extracted_text)
         client = get_client()
@@ -627,6 +629,7 @@ def analyze_document_task(
             state="PROGRESS",
             meta={"status": "Extracting identified remedies", "progress": 75},
         )
+        idemp.heartbeat(idempotency_key, ttl=300)
         
         remedies_prompt = build_remedies_prompt(safe_text, "English")
         if _celery_tracer:
@@ -663,6 +666,7 @@ def analyze_document_task(
             state="PROGRESS",
             meta={"status": "Finalizing analysis results", "progress": 90},
         )
+        idemp.heartbeat(idempotency_key, ttl=300)
         
         analysis_time = (datetime.utcnow() - start_time).total_seconds()
         
@@ -877,6 +881,7 @@ def generate_report_task(
             state="PROGRESS",
             meta={"status": "Compiling case data and documents", "progress": 20},
         )
+        idemp.heartbeat(idempotency_key, ttl=600)
 
         logger.info(
             "Starting report generation",
@@ -890,18 +895,21 @@ def generate_report_task(
             state="PROGRESS",
             meta={"status": "Formatting document structure", "progress": 50},
         )
+        idemp.heartbeat(idempotency_key, ttl=600)
 
         # Step 3: Rendering
         self.update_state(
             state="PROGRESS",
             meta={"status": "Rendering output document", "progress": 80},
         )
+        idemp.heartbeat(idempotency_key, ttl=600)
 
         # Finalization
         self.update_state(
             state="PROGRESS",
             meta={"status": "Finalizing report generation", "progress": 95},
         )
+        idemp.heartbeat(idempotency_key, ttl=600)
 
         # Import the report service locally to avoid circular dependencies
         from report_service import generate_report
@@ -918,6 +926,7 @@ def generate_report_task(
             report_id=report_id,
             privacy_profile=privacy_profile,
         )
+        idemp.heartbeat(idempotency_key, ttl=600)
 
         # Update Report record with completion details
         file_path_str = str(generated.file_path)
