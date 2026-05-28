@@ -530,7 +530,7 @@ def analyze_document_task(
 
     idemp = IdempotencyManager()
     idempotency_key = f"analyze:{user_id}:{document_id}:{content_hash}"
-    if not idemp.acquire(idempotency_key, ttl=300):
+    if not idemp.acquire(idempotency_key, ttl=3600):
         # Another worker is processing or has processed this key
         existing = idemp.get_result(idempotency_key)
         logger.info(
