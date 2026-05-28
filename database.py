@@ -20,11 +20,15 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    JSON,
+    Session,
     UniqueConstraint,
     create_engine,
     make_url,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from contextlib import contextmanager
+from sqlalchemy.orm import Session
 
 from config import Config
 from db.models import CaseNote
@@ -1166,6 +1170,16 @@ class PrecedentMatch(Base):
         return f"<PrecedentMatch(query={self.query_case_id}, precedent={self.precedent_case_id}, type={self.match_type})>"
 
 
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
+
 # Database initialization
 def init_db():
     """Create all tables"""
@@ -2229,4 +2243,12 @@ def get_user_stats(db: Session, user_id: int) -> dict:
     cases = get_user_cases(db, user_id)
 
 
-
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
