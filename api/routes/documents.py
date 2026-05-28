@@ -61,6 +61,13 @@ async def analyze_document(
     # Validate text input if provided
     if request.text:
         validate_text_input(request.text, max_length=ValidationConfig.MAX_TEXT_LENGTH)
+
+    # Validate file_path is within the upload jail before passing to the worker.
+    # This is defence-in-depth: the worker also validates, but catching it here
+    # returns a clean 400 to the caller rather than a task failure.
+    if request.file_path:
+        from api.validation import validate_upload_file_path
+        request.file_path = validate_upload_file_path(request.file_path)
     
     # Generate document ID and job ID
     document_id = str(uuid.uuid4())

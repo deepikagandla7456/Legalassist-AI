@@ -553,6 +553,12 @@ def analyze_document_task(
                 else:
                     extracted_text = response.content.decode("utf-8", errors="ignore")
             elif file_path:
+                # Validate the path is within the upload jail before any
+                # file system access.  This blocks path traversal attacks
+                # where a crafted file_path (e.g. ../../etc/passwd) passed
+                # through the Celery JSON queue could read arbitrary files.
+                from api.validation import validate_upload_file_path
+                file_path = validate_upload_file_path(file_path)
                 if os.path.getsize(file_path) > ValidationConfig.MAX_TEXT_LENGTH:
                     raise ValueError(f"File too large: {os.path.getsize(file_path)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
                 if file_path.lower().endswith(".pdf"):
@@ -561,7 +567,6 @@ def analyze_document_task(
                 else:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         extracted_text = f.read()
-                        
         if not extracted_text:
             raise ValueError("No text provided or extracted from document.")
 
