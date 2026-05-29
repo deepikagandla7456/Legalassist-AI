@@ -53,6 +53,24 @@ def init_db():
     except Exception as exc:
         logger.warning("Failed to create notification_logs index", error=str(exc))
 
+    try:
+        with engine.begin() as connection:
+            if _is_sqlite:
+                cursor = connection.execute(text("PRAGMA table_info(user_preferences)"))
+                cols = [row[1] for row in cursor.fetchall()]
+            else:
+                cursor = connection.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='user_preferences' AND column_name='reminder_thresholds'"
+                ))
+                cols = [row[0] for row in cursor.fetchall()]
+            
+            if "reminder_thresholds" not in cols:
+                logger.info("Adding column reminder_thresholds to user_preferences table")
+                connection.execute(text("ALTER TABLE user_preferences ADD COLUMN reminder_thresholds TEXT"))
+    except Exception as exc:
+        logger.warning("Failed to migrate user_preferences schema", error=str(exc))
+
     if _is_sqlite or _is_postgres:
         try:
             import scripts.apply_immutability as imm

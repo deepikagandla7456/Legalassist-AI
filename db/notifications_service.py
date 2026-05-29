@@ -19,6 +19,7 @@ def create_or_update_user_preference(
     holiday_country: Optional[str] = None,
     holiday_region: Optional[str] = None,
     holiday_calendar_json: Optional[str] = None,
+    reminder_thresholds: Optional[list[int]] = None,
 ) -> UserPreference:
     """Create or update user notification preferences"""
     pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
@@ -32,6 +33,8 @@ def create_or_update_user_preference(
         pref.holiday_country = holiday_country
         pref.holiday_region = holiday_region
         pref.holiday_calendar_json = holiday_calendar_json
+        if reminder_thresholds is not None:
+            pref.reminder_thresholds = reminder_thresholds
         pref.updated_at = dt.datetime.now(dt.timezone.utc)
     else:
         pref = UserPreference(
@@ -44,6 +47,7 @@ def create_or_update_user_preference(
             holiday_country=holiday_country,
             holiday_region=holiday_region,
             holiday_calendar_json=holiday_calendar_json,
+            reminder_thresholds=reminder_thresholds,
         )
         db.add(pref)
 

@@ -207,6 +207,21 @@ def _send_deadline_reminders_safe(db, deadline, user_preference, days_left):
         return []
 
 
+def _get_max_threshold_days(db) -> int:
+    """Find the maximum reminder threshold configured in user preferences."""
+    max_days = 30  # Default fallback
+    try:
+        from db.models.notifications import UserPreference
+        prefs = db.query(UserPreference).all()
+        for p in prefs:
+            thresholds = p.get_reminder_thresholds()
+            if thresholds:
+                max_days = max(max_days, max(thresholds))
+    except Exception as e:
+        logger.warning("scheduler_failed_to_query_max_threshold", error=str(e))
+    return max_days
+
+
 def check_and_send_reminders():
     """
     Hourly job: Check all upcoming deadlines and send reminders at 8 AM in each user's local timezone.
@@ -237,10 +252,10 @@ def check_and_send_reminders():
     --------------------
     1. Distributed Lock Acquisition: Only one instance executes the job
     2. Database Initialization: Ensures tables exist
-    3. Data Retrieval: Fetches all deadlines occurring within the next 31 days
+    3. Data Retrieval: Fetches all deadlines occurring within the next max_days days
     4. Iteration & Filtering:
        a. Computes exact days remaining
-       b. Filters to exact thresholds (30, 10, 3, 1)
+       b. Filters to custom thresholds
        c. Fetches user preferences
        d. Evaluates timezone match (is it 8 AM?)
        e. Evaluates preference match (is notify_X_days enabled?)
@@ -282,42 +297,16 @@ def check_and_send_reminders():
         db = SessionLocal()
         sent_count = 0
         try:
+            max_days = _get_max_threshold_days(db)
             candidates = get_reminder_dispatch_candidates(
                 db,
-                days_before=31,
+                days_before=max_days + 1,
                 now_utc=datetime.now(timezone.utc),
                 reminder_time_checker=is_reminder_time_for_user,
             )
             logger.info("scheduler_reminder_candidates_found", count=len(candidates))
 
-            # Prefetch user preferences for eligible deadlines to avoid N+1 queries
-            eligible = []
-            for dl in upcoming_deadlines:
-                days_left = dl.days_until_deadline()
-                if should_process_threshold(days_left):
-                    eligible.append((dl, days_left))
-
-            user_ids = {d.user_id for d, _ in eligible}
-            prefs_by_user = {}
-            if user_ids:
-                prefs = db.query(UserPreference).filter(UserPreference.user_id.in_(list(user_ids))).all()
-                prefs_by_user = {p.user_id: p for p in prefs}
-
-            for deadline, days_left in eligible:
-                user_preference = prefs_by_user.get(deadline.user_id)
-                if not user_preference:
-                    logger.warning("scheduler_preferences_missing", user_id=deadline.user_id)
-                    continue
-
-                # Check if reminders should be sent based on preferences and time
-                if not is_notify_enabled(days_left, user_preference):
-                    logger.debug("scheduler_notifications_disabled", user_id=deadline.user_id, days_left=days_left)
-                    continue
-
-                if not is_reminder_time_for_user(user_preference.timezone):
-                    logger.debug("scheduler_waiting_for_reminder_window", user_id=deadline.user_id, user_timezone=user_preference.timezone)
-                    continue
-
+            for deadline, days_left, user_preference in candidates:
                 logger.info("scheduler_processing_deadline", case_id=deadline.case_id, days_left=days_left)
 
                 results = _send_deadline_reminders_safe(db, deadline, user_preference, days_left)
@@ -806,9 +795,10 @@ def check_reminders_sync(target_days: Optional[int] = None, db: Optional[object]
     
     try:
         logger.info("scheduler_sync_reminder_check_started", target_days=target_days)
+        max_days = _get_max_threshold_days(db)
         candidates = get_reminder_dispatch_candidates(
             db,
-            days_before=31,
+            days_before=max_days + 1,
             now_utc=datetime.now(timezone.utc),
             reminder_time_checker=is_reminder_time_for_user,
         )
