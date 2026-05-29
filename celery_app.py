@@ -34,7 +34,361 @@ settings = get_settings()
 
 # Initialize
 logger = structlog.get_logger(__name__)
-celery_app = Celery("legalassist", broker=os.getenv("REDIS_URL"), backend=os.getenv("REDIS_URL"))
+initialize_observability_for_environment()
+
+# Ensure Celery instrumentation and HTTP instrumentation are active in workers
+try:
+    from opentelemetry.instrumentation.celery import CeleryInstrumentor
+    from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    try:
+        CeleryInstrumentor().instrument()
+    except Exception:
+        pass
+    try:
+        RequestsInstrumentor().instrument()
+    except Exception:
+        pass
+except Exception:
+    # If opentelemetry not available, skip instrumentation silently
+    pass
+
+
+def build_task_context_headers(
+    request_id: Optional[str] = None,
+    context_user_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Build Celery task headers used to propagate request context."""
+    resolved_request_id = request_id or generate_correlation_id()
+    headers = {
+        "x-request-id": resolved_request_id,
+        "x-correlation-id": resolved_request_id,
+    }
+    if context_user_id:
+        headers["x-user-id"] = str(context_user_id)
+    return headers
+
+
+def enqueue_task_with_context(
+    task,
+    *,
+    request_id: Optional[str] = None,
+    context_user_id: Optional[str] = None,
+    **task_kwargs,
+):
+    """Enqueue a Celery task with request context propagated in headers."""
+    headers = build_task_context_headers(
+        request_id=request_id, context_user_id=context_user_id
+    )
+    return task.apply_async(kwargs=task_kwargs, headers=headers)
+
+
+def _sanitize_header_value(value: Optional[str]) -> Optional[str]:
+    """Strip control characters and non-printable sequences from header values."""
+    if not value:
+        return None
+    cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", value)
+    cleaned = cleaned.replace("\r", "").replace("\n", "")
+    return cleaned.strip() or None
+
+
+def enqueue_task_from_http_request(
+    task, http_request, *, context_user_id: Optional[str] = None, **task_kwargs
+):
+    """Enqueue task carrying context from a FastAPI request object."""
+    request_id = getattr(http_request.state, "request_id", None) or getattr(
+        http_request.state, "correlation_id", None
+    )
+    if not request_id:
+        request_id = _sanitize_header_value(
+            http_request.headers.get("X-Request-Id")
+            or http_request.headers.get("X-Correlation-Id")
+            or http_request.headers.get("x-request-id")
+            or http_request.headers.get("x-correlation-id")
+        )
+
+    user_id = (
+        context_user_id
+        or getattr(http_request.state, "user_id", None)
+        or _sanitize_header_value(http_request.headers.get("X-User-Id"))
+    )
+
+    return enqueue_task_with_context(
+        task,
+        request_id=request_id,
+        context_user_id=user_id,
+        **task_kwargs,
+    )
+
+
+# ============================================================================
+# CUSTOM TASK BASE CLASS
+# ============================================================================
+
+
+class ContextTask(Task):
+    """
+    Custom Celery Task class that ensures tasks work within the application
+    request context and provides default retry logic.
+
+    Attributes:
+        autoretry_for (tuple): Exceptions that trigger an automatic retry.
+        retry_kwargs (dict): Configuration for retry attempts.
+        retry_backoff (bool): Enables exponential backoff for retries.
+    """
+
+    autoretry_for = (
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        IOError,
+    )
+    retry_kwargs = {"max_retries": 3}
+    retry_backoff = True
+
+    @staticmethod
+    def _extract_task_request_context(task_request) -> Dict[str, Optional[str]]:
+        headers = getattr(task_request, "headers", None) or {}
+        request_id = (
+            headers.get("x-request-id")
+            or headers.get("X-Request-Id")
+            or headers.get("x-correlation-id")
+            or headers.get("X-Correlation-Id")
+            or getattr(task_request, "root_id", None)
+            or getattr(task_request, "id", None)
+        )
+        user_id = headers.get("x-user-id") or headers.get("X-User-Id")
+        return {"request_id": request_id, "user_id": user_id}
+
+    def apply_async(self, *args, headers=None, **kwargs):
+        if _propagator is not None and headers is not None:
+            carrier: Dict[str, str] = {}
+            _propagator.inject(carrier)
+            headers.update(carrier)
+        return super().apply_async(*args, headers=headers, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        context = self._extract_task_request_context(self.request)
+
+        if _propagator is not None and trace is not None:
+            carrier: Dict[str, str] = dict(getattr(self.request, "headers", None) or {})
+            ctx = _propagator.extract(carrier)
+            span = trace.get_tracer(__name__).start_span(
+                f"celery.task.{self.name}",
+                context=ctx,
+            )
+            span.set_attribute("celery.task_id", self.request.id or "")
+            span.set_attribute("celery.task_name", self.name or "")
+            if context.get("request_id"):
+                span.set_attribute("correlation.id", context["request_id"])
+            request_scope = span
+
+            with trace.use_span(request_scope):
+                bind_request_context(
+                    request_id=context.get("request_id"), user_id=context.get("user_id")
+                )
+                try:
+                    return self.run(*args, **kwargs)
+                finally:
+                    span.end()
+                    clear_request_context()
+        else:
+            bind_request_context(
+                request_id=context.get("request_id"), user_id=context.get("user_id")
+            )
+            try:
+                return self.run(*args, **kwargs)
+            finally:
+                clear_request_context()
+
+
+# ============================================================================
+# CELERY APPLICATION INSTANTIATION
+# ============================================================================
+
+# Redis URL must be explicitly configured - no silent fallback to localhost
+_redis_env = os.getenv("REDIS_URL")
+if not _redis_env:
+    logger.warning(
+        "REDIS_URL not set — Celery background tasks disabled. "
+        "Set REDIS_URL to enable async task processing."
+    )
+    # Dummy stub so @celery_app.task decorators and .conf.update() don't crash
+    celery_app = SimpleNamespace()
+    celery_app.conf = SimpleNamespace()
+    celery_app.conf.update = lambda **kw: None
+    celery_app.conf.__setitem__ = lambda k, v: None
+    celery_app.Task = lambda: None
+    celery_app.task = lambda *args, **kwargs: (lambda f: f)
+    celery_app.AsyncResult = lambda *args, **kwargs: SimpleNamespace(state="PENDING", result=None, status="PENDING")
+    celery_app.main = "legalassist"
+    REDIS_URL = ""
+else:
+    REDIS_URL = _redis_env
+
+    # Initialize the Celery application instance
+    celery_app = Celery(
+        "legalassist", broker=REDIS_URL, backend=REDIS_URL, task_cls=ContextTask
+    )
+
+
+# ============================================================================
+# CELERY RUNTIME CONFIGURATION
+# ============================================================================
+
+# Detailed configuration for Celery behavior, performance, and reliability.
+# This includes serialization settings, time limits, and worker behavior.
+
+celery_app.conf.update(
+    # Data Serialization
+    # Using JSON for interoperability and security
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    # Timezone and UTC Settings
+    # Standardizing on UTC for consistency across distributed workers
+    timezone="UTC",
+    enable_utc=True,
+    # Task Tracking
+    # Track when tasks start to provide better visibility into long-running jobs
+    task_track_started=True,
+    # Time Limits (Safety Mechanisms)
+    # Prevent tasks from running indefinitely and blocking worker resources
+    task_time_limit=settings.CELERY_TASK_TIMEOUT,
+    task_soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT,
+    # Worker Performance Tuning
+    # Prefetch multiplier controls how many tasks each worker reserved
+    worker_prefetch_multiplier=4,
+    # Max tasks per child prevents memory leaks in long-lived worker processes
+    worker_max_tasks_per_child=1000,
+    # Beat Schedule Configuration for periodic tasks
+    beat_schedule={
+        "send-deadline-reminders": {
+            "task": "send_deadline_reminders",
+            "schedule": 3600.0,
+            "options": {"queue": "maintenance"},
+        },
+        "cleanup-old-tasks": {
+            "task": "cleanup_old_tasks",
+            "schedule": 86400.0,
+            "options": {"queue": "maintenance"},
+        },
+        "cleanup-revoked-tokens": {
+            "task": "cleanup_revoked_tokens",
+            "schedule": 21600.0,
+            "options": {"queue": "maintenance"},
+        },
+        "enforce-retention-policies": {
+            "task": "enforce_retention_policies",
+            "schedule": 86400.0,
+            "options": {"queue": "compliance"},
+        },
+        "enforce-data-anonymization": {
+            "task": "enforce_data_anonymization",
+            "schedule": 86400.0,
+            "options": {"queue": "compliance"},
+        },
+        "purge-expired-data": {
+            "task": "purge_expired_data",
+            "schedule": 604800.0,
+            "options": {"queue": "compliance"},
+        },
+    },
+)
+
+
+# ============================================================================
+# TASK MONITORING UTILITIES
+# ============================================================================
+
+
+class TaskStatus:
+    """
+    Utility class for tracking and managing the lifecycle of asynchronous tasks.
+    Provides methods to query status and revoke tasks.
+    """
+
+    @staticmethod
+    def get_task_status(task_id: str) -> Dict[str, Any]:
+        """
+        Retrieves the current status and metadata for a specific task ID.
+
+        Args:
+            task_id (str): The unique identifier of the task.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the task status,
+                           associated info/results, and a timestamp.
+        """
+        # Fetch the result object from the backend
+        result = AsyncResult(task_id, app=celery_app)
+
+        # Determine the status string and extract relevant info based on state
+        if result.state == "PENDING":
+            status = "pending"
+            info = {"status": "Task not yet started or unknown"}
+
+        elif result.state == "STARTED":
+            status = "processing"
+            # Extract progress information if available
+            info = (
+                result.info
+                if isinstance(result.info, dict)
+                else {"status": "Processing"}
+            )
+
+        elif result.state == "SUCCESS":
+            status = "completed"
+            # Return the actual return value of the task
+            info = result.result if result.result else {}
+
+        elif result.state == "FAILURE":
+            status = "failed"
+            # Capture the exception details
+            info = {"error": str(result.info)}
+
+        elif result.state == "RETRY":
+            status = "retrying"
+            info = {"error": str(result.info)}
+
+        else:
+            # Fallback for custom or less common states
+            status = result.state.lower()
+            info = {}
+
+        # Construct the response payload
+        return {
+            "task_id": task_id,
+            "status": status,
+            "info": info,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @staticmethod
+    def revoke_task(task_id: str) -> bool:
+        """
+        Cancels a running or pending task.
+
+        Args:
+            task_id (str): The unique identifier of the task to revoke.
+
+        Returns:
+            bool: True if the revocation request was sent, False otherwise.
+        """
+        try:
+            logger.info("Revoking task", task_id=task_id)
+            # Terminate=True forces the worker to stop the task immediately
+            celery_app.control.revoke(task_id, terminate=True)
+            return True
+
+        except Exception as e:
+            logger.error("Failed to revoke task", task_id=task_id, error=str(e))
+            return False
+
+
+# ============================================================================
+# ASYNCHRONOUS TASK DEFINITIONS
+# ============================================================================
+
 
 @celery_app.task(bind=True, name="analyze_document")
 def analyze_document_task(self, user_id, document_id, text=None, file_bytes=None, document_type="unknown", file_path=None, file_url=None) -> Dict[str, Any]:
