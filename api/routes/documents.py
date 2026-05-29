@@ -22,8 +22,8 @@ from api.validation import (
     validate_file_upload,
     validate_file_url,
     validate_text_input,
-    validate_file_upload_streaming,
     ValidationConfig,
+    PayloadTooLargeError,
 )
 from api.job_registry import register_job_owner
 from config import Config
@@ -261,22 +261,23 @@ async def upload_document_file(
             allowed_mime_types=ValidationConfig.ALLOWED_MIME_TYPES,
         )
         
-        # Validate file size during streaming read
-        bytes_read = await validate_file_upload_streaming(
-            file,
-            max_size=ValidationConfig.MAX_UPLOAD_SIZE,
-        )
-        
+        # Read file content into memory, then validate size from the buffer.
+        file_content = await file.read()
+        file_bytes_read = len(file_content)
+
+        if file_bytes_read > ValidationConfig.MAX_UPLOAD_SIZE:
+            raise PayloadTooLargeError(
+                detail=f"Upload exceeded maximum size limit of {round(ValidationConfig.MAX_UPLOAD_SIZE / 1024 / 1024, 2)} MB"
+            )
+
         logger.info(
             "File uploaded successfully",
             user_id=current_user.user_id,
             filename=file.filename,
-            size_bytes=bytes_read,
+            size_bytes=file_bytes_read,
             document_type=document_type,
         )
         
-        # Read file content
-        file_content = await file.read()
         file_ext = file.filename.split(".")[-1].lower() if file.filename else ""
 
         # MIME sniff first bytes to catch renamed binaries (e.g. PDF → .txt)
