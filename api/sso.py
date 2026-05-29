@@ -144,6 +144,11 @@ def _get_or_create_user(email: str, name: str, provider: str, provider_id: str) 
                     status_code=status.HTTP_409_CONFLICT,
                     detail="This email is already linked to a different SSO provider. Contact support to merge accounts.",
                 )
+            if existing.sso_provider is None and existing.password_hash is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email already has a password-based account. Log in with your password and link your SSO provider from your account settings.",
+                )
             existing.sso_provider = provider
             existing.sso_provider_id = provider_id
             existing.last_login = datetime.now(timezone.utc)
