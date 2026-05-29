@@ -71,6 +71,14 @@ def _verify_sendgrid_signature(request: Request, payload: str) -> bool:
     if not signature or not timestamp:
         raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_SIGNATURE_MISSING", message="Missing SendGrid signature headers")
 
+    import time
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_WEBHOOK_INVALID_TIMESTAMP", message="Invalid SendGrid webhook timestamp")
+    if abs(time.time() - ts) > 300:
+        raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_WEBHOOK_EXPIRED", message="SendGrid webhook timestamp is too old, possible replay attack")
+
     public_key = Config.get_sendgrid_event_webhook_public_key()
     if not public_key:
         raise StructuredAPIError(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, error_code="SENDGRID_WEBHOOK_NOT_CONFIGURED", message="SendGrid event webhook public key is not configured")
