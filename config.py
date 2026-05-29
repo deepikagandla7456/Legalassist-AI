@@ -215,6 +215,9 @@ class Config:
                 )
 
 
+# Validate URLs on module load to fail fast for production misconfiguration
+Config.validate_urls()
+
 import re
 import copy
 
