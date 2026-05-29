@@ -55,6 +55,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds
 # PBKDF2 iterations for API key hashing (OWASP 2023 minimum for SHA-256)
 API_KEY_HASH_ITERATIONS = 600000
 
+# Auth rate limiting thresholds — explicitly bridged from APISettings so any
+# direct import of these constants (e.g. from api.auth import AUTH_RATE_LIMIT_REQUESTS) resolves.
+AUTH_RATE_LIMIT_REQUESTS = settings.AUTH_RATE_LIMIT_REQUESTS
+AUTH_RATE_LIMIT_WINDOW = settings.AUTH_RATE_LIMIT_WINDOW
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plain password against a bcrypt hash."""
     return pwd_context.verify(plain_password, hashed_password)

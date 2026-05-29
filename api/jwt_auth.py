@@ -125,6 +125,8 @@ def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -
 
 
 def verify_token(token: str) -> Dict:
+    if not token or token.count(".") != 2:
+        raise InvalidTokenError("Invalid token: JWT must have exactly 3 dot-separated segments")
     try:
         payload = None
         last_error = None
