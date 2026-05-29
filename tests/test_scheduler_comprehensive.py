@@ -521,3 +521,30 @@ class TestSchedulerComprehensive:
             # Target 30 days
             count = check_reminders_sync(target_days=30)
             assert count == 1
+
+    def test_check_and_send_reminders_handles_exception_safely(self):
+        """Test that check_and_send_reminders handles database query exceptions gracefully without raising UnboundLocalError"""
+        with patch("scheduler.init_db"), \
+             patch("scheduler.SessionLocal") as mock_session_local, \
+             patch("scheduler.distributed_lock") as mock_lock, \
+             patch("scheduler.logger.error") as mock_error:
+            
+            # Make the lock succeed
+            mock_lock.return_value.__enter__.return_value = True
+            mock_lock.return_value.__exit__.return_value = False
+            
+            mock_db = MagicMock()
+            mock_session_local.return_value = mock_db
+            
+            # Force get_upcoming_deadlines to raise an exception
+            with patch("scheduler.get_upcoming_deadlines", side_effect=RuntimeError("Database failure")):
+                # This should run without raising UnboundLocalError and return 0
+                sent_count = check_and_send_reminders()
+                
+                assert sent_count == 0
+                mock_error.assert_called_with(
+                    "scheduler_reminder_job_failed",
+                    error="Database failure",
+                    exc_info=True
+                )
+
