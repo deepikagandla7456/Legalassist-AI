@@ -95,7 +95,7 @@ def _update_delivery_status(db: Session, message_id: str | None, status_value: N
 
 
 @router.post("/twilio")
-async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db_rls)) -> dict:
+async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
     raw_body = (await request.body()).decode("utf-8")
     params = dict(parse_qsl(raw_body, keep_blank_values=True))
 
@@ -118,7 +118,7 @@ async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db
 
 
 @router.post("/sendgrid")
-async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_db_rls)) -> dict:
+async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
     raw_body = (await request.body()).decode("utf-8")
 
     if not _verify_sendgrid_signature(request, raw_body):
