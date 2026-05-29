@@ -478,7 +478,7 @@ class NotificationService:
         Returns: (subject, html_content)
         """
         formatted_date = deadline.deadline_date.strftime("%d %B %Y")
-        escaped_title = html.escape(deadline.case_title)
+        escaped_title = html.escape(getattr(deadline, 'case_title', ''))
         escaped_type = html.escape(deadline.deadline_type.title())
         escaped_desc = html.escape(deadline.description) if deadline.description else "No additional details provided."
         
@@ -493,7 +493,7 @@ class NotificationService:
             accent_color = "#1a5490" # Info Blue
             urgency_label = "REMINDER"
 
-        subject = f"⚖️ {urgency_label}: {deadline.case_title} - {escaped_type} Deadline"
+        subject = f"⚖️ {urgency_label}: {getattr(deadline, 'case_title', '')} - {escaped_type} Deadline"
         
         html_content = f"""
         <!DOCTYPE html>
@@ -592,7 +592,7 @@ class NotificationService:
             tmpl = get_notification_template_for_user(db, deadline.user_id)
             if tmpl and tmpl.sms_template:
                 values = {
-                    "case_title": deadline.case_title,
+                    "case_title": getattr(deadline, 'case_title', ''),
                     "case_number": getattr(deadline, "case_id", ""),
                     "deadline_date": deadline.deadline_date.strftime("%d %b %Y") if deadline.deadline_date else "",
                     "days_left": days_left,
@@ -608,7 +608,7 @@ class NotificationService:
             logger.exception("Error rendering user SMS template; falling back to default")
 
         if message is None:
-            message = self.build_sms_message(deadline.case_title, days_left, deadline.deadline_date)
+            message = self.build_sms_message(getattr(deadline, 'case_title', ''), days_left, deadline.deadline_date)
 
         # Send SMS before writing to DB so a crash never leaves an orphan PENDING record.
         success, message_id, error = self.sms_client.send_sms(user_preference.phone_number, message)
@@ -667,7 +667,7 @@ class NotificationService:
             tmpl = get_notification_template_for_user(db, deadline.user_id)
             if tmpl and (tmpl.email_html_template or tmpl.email_subject_template):
                 values = {
-                    "case_title": deadline.case_title,
+                    "case_title": getattr(deadline, 'case_title', ''),
                     "case_number": getattr(deadline, "case_id", ""),
                     "deadline_date": deadline.deadline_date.strftime("%d %B %Y") if deadline.deadline_date else "",
                     "days_left": days_left,
