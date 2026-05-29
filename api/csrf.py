@@ -40,13 +40,16 @@ def generate_csrf_token(user_id: int, session_id: str) -> str:
     secret = _get_csrf_secret()
     message = f"{user_id}:{session_id}"
     sig = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
-    return f"{session_id}.{sig[:32]}"
+    return f"{CSRF_TOKEN_V2_PREFIX}{session_id}.{sig[:32]}"
 
 
 def validate_csrf_token(token: str, user_id: int) -> bool:
     if not token or "." not in token:
         return False
-    parts = token.rsplit(".", 1)
+    if not token.startswith(CSRF_TOKEN_V2_PREFIX):
+        return False
+    inner = token[len(CSRF_TOKEN_V2_PREFIX):]
+    parts = inner.rsplit(".", 1)
     if len(parts) != 2:
         return False
     session_id, received_sig = parts
@@ -99,17 +102,17 @@ def is_same_origin(request: Request, allowed_hosts: Optional[Set[str]] = None) -
             parsed = urlparse(referer)
             allowed = allowed_hosts or set()
             host = request.headers.get("host", "").split(":")[0]
-            if parsed.netloc in allowed or parsed.netloc == f"{host}:443":
+            if parsed.hostname in allowed or parsed.hostname == host:
                 return True
-            return parsed.netloc == f"{host}:443" or parsed.netloc == host
+            return parsed.hostname == host
         return False
     from urllib.parse import urlparse
     parsed = urlparse(origin)
     host = request.headers.get("host", "").split(":")[0]
     allowed = allowed_hosts or set()
-    if parsed.netloc in allowed:
+    if parsed.hostname in allowed:
         return True
-    return parsed.netloc == host
+    return parsed.hostname == host
 
 
 def validate_csrf(
@@ -145,6 +148,7 @@ def validate_csrf(
         try:
             payload = verify_token(access_token)
             current_user_id = int(payload.get("sub"))
+            request.state.csrf_user_id = current_user_id
         except TokenExpiredError as exc:
             raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="TOKEN_EXPIRED", message=str(exc))
         except (InvalidTokenError, TypeError, ValueError):
@@ -218,7 +222,7 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
             response.set_cookie(
                 CSRF_COOKIE_NAME,
                 token,
-                httponly=False,
+                httponly=True,
                 samesite="lax",
                 secure=True,
                 path="/",
@@ -238,13 +242,12 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
                 except Exception:
                     resolved_user_id = None
 
-            if resolved_user_id is not None:
-                session_id = jwt_jti or secrets.token_urlsafe(16)
-                token = generate_csrf_token(resolved_user_id, session_id)
+            if resolved_user_id is not None and jwt_jti:
+                token = generate_csrf_token(resolved_user_id, jwt_jti)
                 response.set_cookie(
                     CSRF_COOKIE_NAME,
                     token,
-                    httponly=False,
+                    httponly=True,
                     samesite="lax",
                     secure=True,
                     path="/",

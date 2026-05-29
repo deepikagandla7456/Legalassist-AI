@@ -20,11 +20,14 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    JSON,
+    Session,
     UniqueConstraint,
     create_engine,
     make_url,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
+from contextlib import contextmanager
 
 from config import Config
 from db.models import CaseNote
@@ -177,7 +180,8 @@ from db.models.analytics import (
     CaseEmbedding, CaseIssue, CaseArgument, KnowledgeGraphEdge, PrecedentMatch, RevokedToken,
 )
 from db.models.cases import (
-    CaseStatus, DocumentType, CaseDeadline, Case, CaseDocument, Attachment, CaseTimeline, CaseNote,
+    CaseStatus, DocumentType, CaseDeadline, Case, CaseDocument, Attachment, CaseTimeline, CaseNote, AnonymizedShareToken,
+    CaseComment, CasePresence,
 )
 from db.models.notifications import (
     NotificationStatus, NotificationChannel, UserPreference, NotificationTemplate, NotificationLog,
@@ -301,28 +305,6 @@ class NotificationLog(Base):
 
     def __repr__(self):
         return f"<NotificationLog(user_id={self.user_id}, status={self.status}, channel={self.channel})>"
-
-
-class IdempotencyKeyStatus(str, enum.Enum):
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-
-
-class IdempotencyKey(Base):
-    __tablename__ = "idempotency_keys"
-    id = Column(Integer, primary_key=True)
-    key = Column(String(255), unique=True, nullable=False, index=True)
-    method = Column(String(10), nullable=False)
-    path = Column(String(1024), nullable=False)
-    status = Column(SQLEnum(IdempotencyKeyStatus), default=IdempotencyKeyStatus.IN_PROGRESS)
-    response_status = Column(Integer, nullable=True)
-    response_headers = Column(JSON, nullable=True)
-    response_body = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-    def __repr__(self):
-        return f"<IdempotencyKey(key={self.key}, status={self.status})>"
 
 
 class CaseRecord(Base):
@@ -1187,6 +1169,16 @@ class PrecedentMatch(Base):
     def __repr__(self):
         return f"<PrecedentMatch(query={self.query_case_id}, precedent={self.precedent_case_id}, type={self.match_type})>"
 
+
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
 
 # Database initialization
 def init_db():
@@ -2293,4 +2285,12 @@ def get_user_stats(db: Session, user_id: int) -> dict:
     cases = get_user_cases(db, user_id)
 
 
-
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))

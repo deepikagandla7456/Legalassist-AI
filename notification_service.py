@@ -57,14 +57,15 @@ from db import (
     UserPreference,
     CaseDeadline,
 )
-from database import get_notification_template_for_user
+from database import (
+    get_notification_template_for_user,
+    reserve_notification,
+    update_notification_result,
+)
 from db.crud.notifications import (
     get_or_create_notification_log,
     update_notification_log_by_keys,
     has_notification_been_sent,
-    reserve_notification,
-    update_notification_result,
-    get_notification_template_for_user,
 )
 from db.crud.audit import record_immutable_audit_event
 from core.template_renderer import render_template, validate_template, TemplateValidationError
@@ -643,7 +644,7 @@ class NotificationService:
             success=True,
             channel=NotificationChannel.SMS,
             recipient=user_preference.phone_number,
-            message_id=f"task_{task_result.id}",
+            message_id=message_id,
             error=None,
         )
 
@@ -726,20 +727,18 @@ class NotificationService:
             days_left=days_left,
         )
 
-        # Update the reserved log with task id as message_id (still PENDING until background updates)
+        # Annotate with the real task id without touching the status column.
+        # update_notification_result(status=PENDING) would overwrite a SENT
+        # status set by a fast Celery worker that completed before this line.
         try:
-            update_notification_result(
-                db=db,
-                deadline_id=deadline.id,
-                user_id=deadline.user_id,
-                days_before=days_left,
-                channel=NotificationChannel.EMAIL,
-                status=NotificationStatus.PENDING,
-                message_id=f"task_{task_result.id}",
-                message_preview=html_content,
-            )
+            db.query(NotificationLog).filter(
+                NotificationLog.deadline_id == deadline.id,
+                NotificationLog.days_before == days_left,
+                NotificationLog.channel == NotificationChannel.EMAIL,
+            ).update({"message_id": f"task_{task_result.id}"})
+            db.commit()
         except Exception:
-            logger.exception("Failed to annotate reserved email with task id")
+            logger.debug("Failed to annotate reserved email with task id")
 
         return NotificationResult(
             success=True,
