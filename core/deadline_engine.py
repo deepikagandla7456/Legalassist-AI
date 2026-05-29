@@ -68,7 +68,16 @@ def calculate_deadline(
     tz = timezone or "UTC"
     dt = _parse_date(start, tz)
 
-    holidays_set = set(holidays or [])
+    holidays_set = set()
+    if holidays:
+        for h in holidays:
+            try:
+                date.fromisoformat(h)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid holiday date format: {h!r}. Expected YYYY-MM-DD."
+                )
+        holidays_set = set(holidays)
 
     remaining = max(0, int(business_days))
     current = dt
