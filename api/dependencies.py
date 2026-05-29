@@ -1,6 +1,7 @@
 """
 Dependency injection and common dependencies
 """
+from typing import Optional
 from typing import Generator, Optional
 
 import structlog
@@ -18,6 +19,16 @@ async def get_rate_limit_key(
 ) -> str:
     """Return a per-identity rate-limit key.
 
+    Security fix: unauthenticated requests are now keyed by source IP rather
+    than the shared literal ``"anonymous"``.  The previous behaviour allowed a
+    single attacker to exhaust the entire anonymous quota and lock out every
+    other unauthenticated user (login, OTP, password-reset) simultaneously.
+
+    Resolution order:
+    1. Authenticated user  → ``user:<user_id>``   (unchanged)
+    2. Unauthenticated     → ``ip:<client_ip>``   (was: ``"anonymous"``)
+    3. No IP available     → unique per-request token so no shared bucket
+
     Unauthenticated requests are keyed by source IP rather than the shared
     literal 'anonymous' to prevent a single attacker from exhausting the
     entire unauthenticated quota.
@@ -25,6 +36,8 @@ async def get_rate_limit_key(
     if current_user:
         return f"user:{current_user.user_id}"
 
+    # Delegate to the same resolver used by the rate-limit middleware so the
+    # keying strategy is consistent across the entire application.
     from api.limiter import resolve_rate_limit_identifier
     return resolve_rate_limit_identifier(request)
 
