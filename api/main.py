@@ -42,14 +42,20 @@ logger = structlog.get_logger(__name__)
 
 # Force explicit origins when credentials are enabled — never allow *
 _origins = settings.CORS_ORIGINS
-if isinstance(_origins, list) and "*" in _origins:
-    sanitized = [o for o in _origins if o != "*"]
+had_wildcard = False
+if isinstance(_origins, str):
+    _origins = [o.strip() for o in _origins.split(",") if o.strip()]
+if "*" in _origins:
+    had_wildcard = True
+    _origins = [o for o in _origins if o != "*"]
+if not _origins:
+    _origins = ["http://localhost:8080"]
+if had_wildcard:
     logging.getLogger(__name__).warning(
         "Removed wildcard '*' from CORS_ORIGINS because allow_credentials=True. "
         "Explicit origins required: %s",
-        sanitized or None,
+        _origins,
     )
-    _origins = sanitized or ["http://localhost:8080"]
 
 middleware = [
     Middleware(
