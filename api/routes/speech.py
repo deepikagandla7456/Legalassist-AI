@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["transcription"])
 
+MAX_AUDIO_BASE64_LENGTH = 35_000_000  # ~25MB decoded
+
 
 class TranscribeRequest(BaseModel):
     audio_base64: str
@@ -43,6 +45,8 @@ def transcribe(
     503
         The transcription provider is unavailable or not configured.
     """
+    if len(req.audio_base64) > MAX_AUDIO_BASE64_LENGTH:
+        raise HTTPException(status_code=413, detail="Audio payload too large")
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
     except Exception as exc:
