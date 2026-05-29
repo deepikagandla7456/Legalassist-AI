@@ -342,10 +342,11 @@ async def get_current_user(
                         role="admin" if getattr(user, "is_admin", False) else "user"
                     )
 
-            # Fallback to default API user
+            # Fallback to deterministic negative ID matching _resolve_api_key_user
+            derived_id = int.from_bytes(hashlib.sha256(key_id.encode()).digest()[:8], "big", signed=False)
             return CurrentUser(
-                user_id=0,
-                email="api_user",
+                user_id=-derived_id,
+                email=f"api_key_{key_id[:8]}",
                 role="api"
             )
         finally:
