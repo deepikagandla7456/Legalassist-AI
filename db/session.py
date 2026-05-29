@@ -71,6 +71,26 @@ def init_db():
     except Exception as exc:
         logger.warning("Failed to migrate user_preferences schema", error=str(exc))
 
+    try:
+        with engine.begin() as connection:
+            if _is_sqlite:
+                cursor = connection.execute(text("PRAGMA table_info(case_deadlines)"))
+                cols = [row[1] for row in cursor.fetchall()]
+            else:
+                cursor = connection.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='case_deadlines' AND column_name='status'"
+                ))
+                cols = [row[0] for row in cursor.fetchall()]
+            
+            if "status" not in cols:
+                logger.info("Adding column status to case_deadlines table")
+                connection.execute(text("ALTER TABLE case_deadlines ADD COLUMN status VARCHAR(50) DEFAULT 'active'"))
+                # Migrate existing completed deadlines
+                connection.execute(text("UPDATE case_deadlines SET status = 'completed' WHERE is_completed = 1"))
+    except Exception as exc:
+        logger.warning("Failed to migrate case_deadlines schema", error=str(exc))
+
     if _is_sqlite or _is_postgres:
         try:
             import scripts.apply_immutability as imm

@@ -124,7 +124,7 @@ def get_reminder_dispatch_candidates(
         microsecond=999999,
     )
     deadlines = db.query(CaseDeadline).filter(
-        CaseDeadline.is_completed.is_(False),
+        CaseDeadline.status == "active",
         CaseDeadline.deadline_date <= target_utc,
         CaseDeadline.deadline_date > now_utc,
     ).all()

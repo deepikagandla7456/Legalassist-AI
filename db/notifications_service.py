@@ -63,9 +63,41 @@ def get_notification_template_for_user(db: Session, user_id: int) -> Optional[No
 
 def get_user_deadlines(db: Session, user_id: int):
     """Get all active deadlines for a user"""
-    now = dt.datetime.now(dt.timezone.utc)
     return db.query(CaseDeadline).filter(
         CaseDeadline.user_id == user_id,
-        CaseDeadline.is_completed.is_(False),
-        CaseDeadline.deadline_date > now,
+        CaseDeadline.status == "active",
     ).order_by(CaseDeadline.deadline_date).all()
+
+
+def check_and_update_overdue_deadlines(db: Session) -> int:
+    """
+    Find all active deadlines that have passed their deadline_date and transition them to overdue.
+    Returns the number of transitioned deadlines.
+    """
+    import logging
+    from db.models.cases import CaseDeadline
+    from db.case_service import transition_deadline
+
+    logger = logging.getLogger(__name__)
+    now = dt.datetime.now(dt.timezone.utc)
+    
+    # Query active deadlines that are past due
+    overdue_deadlines = db.query(CaseDeadline).filter(
+        CaseDeadline.status == "active",
+        CaseDeadline.deadline_date <= now
+    ).all()
+
+    count = 0
+    for deadline in overdue_deadlines:
+        try:
+            # Transition status to overdue (actor is system, we use user_id of the deadline owner)
+            transition_deadline(db, deadline.id, "overdue", actor_user_id=deadline.user_id)
+            count += 1
+        except Exception as e:
+            logger.error(
+                "failed_to_auto_transition_overdue_deadline",
+                deadline_id=deadline.id,
+                error=str(e),
+                exc_info=True
+            )
+    return count

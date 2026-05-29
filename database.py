@@ -224,6 +224,7 @@ class CaseDeadline(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
     is_completed = Column(Boolean, default=False, index=True)
+    status = Column(String(50), default="active", nullable=False, index=True)
 
     # Relationships
     case = relationship("Case", back_populates="deadlines")
