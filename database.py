@@ -43,6 +43,8 @@ from db.models import (
     CaseArgument,
     KnowledgeGraphEdge,
     PrecedentMatch,
+    CaseNote,
+    CaseNoteVersion,
 )
 from db.crud.notifications import (
     create_case_deadline,
@@ -106,6 +108,9 @@ __all__ = [
     "record_otp_failed_attempt",
     "reset_otp_failed_attempts",
     "cleanup_expired_otps",
+    "revoke_token",
+    "is_token_revoked",
+    "cleanup_expired_revoked_tokens",
     "create_case",
     "get_user_cases",
     "get_case_by_id",
@@ -126,6 +131,12 @@ __all__ = [
     "create_timeline_event",
     "create_attachment",
     "get_attachments_for_case",
+    "CaseNote",
+    "CaseNoteVersion",
+    "save_case_note_draft",
+    "get_case_note",
+    "publish_case_note",
+    "get_case_note_history",
 ]
 
 
@@ -236,6 +247,28 @@ def cleanup_expired_otps(db: Session) -> int:
     """Delete expired OTP records"""
     now = dt.datetime.now(dt.timezone.utc)
     deleted = db.query(OTPVerification).filter(OTPVerification.expires_at < now).delete()
+    db.commit()
+    return deleted
+
+
+def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken:
+    """Persist a JWT revocation record."""
+    token = RevokedToken(jti=jti, expires_at=expires_at)
+    db.add(token)
+    db.commit()
+    db.refresh(token)
+    return token
+
+
+def is_token_revoked(db: Session, jti: str) -> bool:
+    """Check whether a JWT has already been revoked."""
+    return db.query(RevokedToken).filter(RevokedToken.jti == jti).first() is not None
+
+
+def cleanup_expired_revoked_tokens(db: Session) -> int:
+    """Delete expired JWT revocation records."""
+    now = dt.datetime.now(dt.timezone.utc)
+    deleted = db.query(RevokedToken).filter(RevokedToken.expires_at < now).delete()
     db.commit()
     return deleted
 
@@ -699,6 +732,8 @@ from sqlalchemy.orm import relationship
 
 Case.comments = relationship("CaseComment", back_populates="case", cascade="all, delete-orphan", order_by="CaseComment.created_at")
 Case.presence_updates = relationship("CasePresence", back_populates="case", cascade="all, delete-orphan")
+User.case_comments = relationship("CaseComment", back_populates="user", cascade="all, delete-orphan")
+User.case_presence = relationship("CasePresence", back_populates="user", cascade="all, delete-orphan")
 
 
 
@@ -846,14 +881,16 @@ def reserve_notification(
         db.commit()
         db.refresh(log)
         return log, True
-    except IntegrityError:
+    except Exception:
         db.rollback()
         existing = db.query(NotificationLog).filter(
             NotificationLog.deadline_id == deadline_id,
             NotificationLog.days_before == days_before,
             NotificationLog.channel == channel,
         ).first()
-        return existing, False
+        if existing:
+            return existing, False
+        raise
 
 def update_notification_result(
     db: Session,
@@ -1047,3 +1084,108 @@ def get_case_presence(db: Session, case_id: int, active_window_minutes: int = 5)
         CasePresence.case_id == case_id,
         CasePresence.last_seen >= cutoff,
     ).order_by(CasePresence.last_seen.desc()).all()
+
+
+def get_case_note(db: Session, case_id: int, user_id: int) -> Optional[CaseNote]:
+    """Get the editable note state for a case owned by the user."""
+    return (
+        db.query(CaseNote)
+        .filter(
+            CaseNote.case_id == case_id,
+            CaseNote.user_id == user_id,
+        )
+        .first()
+    )
+
+
+def save_case_note_draft(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    note_text: str,
+    changed_by_email: Optional[str] = None,
+) -> CaseNote:
+    """Persist the current draft text without creating a published version."""
+    case = get_case_by_id(db, case_id)
+    if not case or case.user_id != user_id:
+        raise ValueError("Case not found or not owned by user")
+
+    note = get_case_note(db, case_id, user_id)
+    if not note:
+        note = CaseNote(case_id=case_id, user_id=user_id, draft_text=note_text)
+        db.add(note)
+    else:
+        note.draft_text = note_text
+        note.draft_updated_at = dt.datetime.now(dt.timezone.utc)
+
+    db.commit()
+    db.refresh(note)
+    return note
+
+
+def publish_case_note(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    note_text: Optional[str] = None,
+    changed_by_email: Optional[str] = None,
+) -> CaseNoteVersion:
+    """Create an immutable published version from the current draft."""
+    case = get_case_by_id(db, case_id)
+    if not case or case.user_id != user_id:
+        raise ValueError("Case not found or not owned by user")
+
+    note = get_case_note(db, case_id, user_id)
+    if not note:
+        note = CaseNote(case_id=case_id, user_id=user_id, draft_text=note_text or "")
+        db.add(note)
+        db.flush()
+    elif note_text is not None:
+        note.draft_text = note_text
+        note.draft_updated_at = dt.datetime.now(dt.timezone.utc)
+
+    current_text = note_text if note_text is not None else note.draft_text
+    if current_text is None:
+        current_text = ""
+
+    next_version = (
+        db.query(CaseNoteVersion.version_number)
+        .filter(CaseNoteVersion.case_id == case_id, CaseNoteVersion.note_id == note.id)
+        .order_by(CaseNoteVersion.version_number.desc())
+        .first()
+    )
+    version_number = (next_version[0] if next_version else 0) + 1
+
+    version = CaseNoteVersion(
+        note_id=note.id,
+        case_id=case_id,
+        version_number=version_number,
+        note_text=current_text,
+        change_type="published",
+        changed_by_user_id=user_id,
+        changed_by_email=changed_by_email,
+        version_metadata={"published_from_draft": True},
+    )
+    note.published_text = current_text
+    note.published_at = dt.datetime.now(dt.timezone.utc)
+    note.published_version_id = version_number
+
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    db.refresh(note)
+    return version
+
+
+def get_case_note_history(db: Session, case_id: int, user_id: int) -> List[CaseNoteVersion]:
+    """Get immutable published note versions for a case."""
+    case = get_case_by_id(db, case_id)
+    if not case or case.user_id != user_id:
+        return []
+
+    return (
+        db.query(CaseNoteVersion)
+        .filter(CaseNoteVersion.case_id == case_id)
+        .order_by(CaseNoteVersion.version_number.desc(), CaseNoteVersion.created_at.desc())
+        .all()
+    )
