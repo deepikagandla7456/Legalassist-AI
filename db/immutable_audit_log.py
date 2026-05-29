@@ -29,6 +29,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import threading
 
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Index, text
 
@@ -115,6 +116,7 @@ def _get_audit_session():
     """
     from db.session import SessionLocal
     return SessionLocal()
+_audit_append_lock = threading.Lock()
 
 
 def append_audit_entry(

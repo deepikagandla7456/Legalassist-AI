@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import enum
 import logging
-from contextlib import contextmanager
-
-from typing import List, Optional
-
+from typing import Optional, List, Tuple
 from sqlalchemy import (
     Boolean,
     Column,
@@ -23,11 +20,14 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    JSON,
+    Session,
     UniqueConstraint,
     create_engine,
     make_url,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
+from contextlib import contextmanager
 
 from config import Config
 from db.models import CaseNote
@@ -180,7 +180,8 @@ from db.models.analytics import (
     CaseEmbedding, CaseIssue, CaseArgument, KnowledgeGraphEdge, PrecedentMatch, RevokedToken,
 )
 from db.models.cases import (
-    CaseStatus, DocumentType, CaseDeadline, Case, CaseDocument, Attachment, CaseTimeline, CaseNote,
+    CaseStatus, DocumentType, CaseDeadline, Case, CaseDocument, Attachment, CaseTimeline, CaseNote, AnonymizedShareToken,
+    CaseComment, CasePresence,
 )
 from db.models.notifications import (
     NotificationStatus, NotificationChannel, UserPreference, NotificationTemplate, NotificationLog,
@@ -281,8 +282,9 @@ class UserPreference(Base):
 class NotificationLog(Base):
     """Model for tracking sent notifications"""
     __tablename__ = "notification_logs"
-    __table_args__ = {"extend_existing": True}
-
+    __table_args__ = (
+        UniqueConstraint("deadline_id", "days_before", "channel", name="uq_notification_deadline_days_channel"),
+    )
     id = Column(Integer, primary_key=True)
     deadline_id = Column(Integer, ForeignKey("case_deadlines.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1168,6 +1170,16 @@ class PrecedentMatch(Base):
         return f"<PrecedentMatch(query={self.query_case_id}, precedent={self.precedent_case_id}, type={self.match_type})>"
 
 
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
+
 # Database initialization
 def init_db():
     """Create all tables"""
@@ -1361,6 +1373,136 @@ def log_notification(
     db.commit()
     db.refresh(log)
     return log
+
+
+def reserve_idempotency_key(db: Session, key: str, method: str, path: str) -> Tuple[IdempotencyKey, bool]:
+    """Attempt to reserve an idempotency key; returns (instance, created_bool)"""
+    from sqlalchemy.exc import IntegrityError
+
+    ik = IdempotencyKey(key=key, method=method, path=path, status=IdempotencyKeyStatus.IN_PROGRESS)
+    try:
+        db.add(ik)
+        db.commit()
+        db.refresh(ik)
+        return ik, True
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+        return existing, False
+
+
+def set_idempotency_response(db: Session, key: str, status_code: int, headers: dict, body: str) -> IdempotencyKey:
+    ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).with_for_update(read=True).first()
+    if not ik:
+        ik = IdempotencyKey(key=key, method="POST", path="unknown")
+    ik.response_status = status_code
+    ik.response_headers = headers
+    ik.response_body = body
+    ik.status = IdempotencyKeyStatus.COMPLETED
+    ik.completed_at = dt.datetime.now(dt.timezone.utc)
+    db.add(ik)
+    db.commit()
+    db.refresh(ik)
+    return ik
+
+
+def get_idempotency_response(db: Session, key: str):
+    ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key, IdempotencyKey.status == IdempotencyKeyStatus.COMPLETED).first()
+    if not ik:
+        return None
+    return {
+        "status_code": ik.response_status,
+        "headers": ik.response_headers or {},
+        "body": ik.response_body or "",
+    }
+
+
+def reserve_notification(
+    db: Session,
+    deadline_id: int,
+    user_id: int,
+    channel: NotificationChannel,
+    recipient: str,
+    days_before: int,
+    message_preview: Optional[str] = None,
+) -> Tuple[NotificationLog, bool]:
+    """Attempt to reserve a notification slot by inserting a PENDING record.
+
+    Returns tuple (NotificationLog, created_bool). If created_bool is False,
+    an existing log was found and reservation failed (another worker reserved it).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    log = NotificationLog(
+        deadline_id=deadline_id,
+        user_id=user_id,
+        channel=channel,
+        recipient=recipient,
+        days_before=days_before,
+        status=NotificationStatus.PENDING,
+        message_preview=message_preview,
+    )
+    try:
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        return log, True
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(NotificationLog).filter(
+            NotificationLog.deadline_id == deadline_id,
+            NotificationLog.days_before == days_before,
+            NotificationLog.channel == channel,
+        ).first()
+        return existing, False
+
+
+def update_notification_result(
+    db: Session,
+    deadline_id: int,
+    user_id: int,
+    days_before: int,
+    channel: NotificationChannel,
+    status: NotificationStatus,
+    message_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+    message_preview: Optional[str] = None,
+) -> NotificationLog:
+    """Update an existing notification log if present, otherwise create one.
+
+    This function is resilient to races and will upsert the record appropriately.
+    """
+    existing = db.query(NotificationLog).filter(
+        NotificationLog.deadline_id == deadline_id,
+        NotificationLog.days_before == days_before,
+        NotificationLog.channel == channel,
+    ).with_for_update(read=True).first()
+
+    if existing:
+        existing.status = status
+        existing.message_id = message_id or existing.message_id
+        existing.error_message = error_message or existing.error_message
+        existing.message_preview = message_preview or existing.message_preview
+        if status == NotificationStatus.SENT:
+            existing.sent_at = dt.datetime.now(dt.timezone.utc)
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    # Not found - create a new log record
+    return log_notification(
+        db=db,
+        deadline_id=deadline_id,
+        user_id=user_id,
+        channel=channel,
+        recipient="unknown",
+        days_before=days_before,
+        status=status,
+        message_id=message_id,
+        error_message=error_message,
+        message_preview=message_preview,
+    )
 
 
 def get_notification_history(db: Session, user_id: int, limit: int = 50) -> List[NotificationLog]:
@@ -2143,4 +2285,12 @@ def get_user_stats(db: Session, user_id: int) -> dict:
     cases = get_user_cases(db, user_id)
 
 
-
+class DocumentProcessingState(Base):
+    __tablename__ = "document_processing_state"
+    __table_args__ = {"extend_existing": True}
+    
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("case_documents.id", ondelete="CASCADE"), unique=True, index=True)
+    current_stage = Column(String(50), default="PENDING")
+    stage_data = Column(JSON, default={})
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: dt.datetime.now(dt.timezone.utc))
