@@ -126,12 +126,7 @@ from database import Attachment, User, SessionLocal, get_case_by_id, get_case_do
 # INITIALIZATION & LOGGING
 # ============================================================================
 
-# Initialize the settings object to fetch global configurations
-settings = get_settings()
-
-# Initialize the structured logger for consistent logging across tasks
 logger = structlog.get_logger(__name__)
-initialize_observability_for_environment()
 
 
 def build_task_context_headers(
@@ -371,8 +366,8 @@ celery_app.conf.update(
     task_track_started=True,
     # Time Limits (Safety Mechanisms)
     # Prevent tasks from running indefinitely and blocking worker resources
-    task_time_limit=settings.CELERY_TASK_TIMEOUT,
-    task_soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT,
+    task_time_limit=get_settings().CELERY_TASK_TIMEOUT,
+    task_soft_time_limit=get_settings().CELERY_TASK_SOFT_TIME_LIMIT,
     # Worker Performance Tuning
     # Prefetch multiplier controls how many tasks each worker reserved
     worker_prefetch_multiplier=4,

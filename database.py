@@ -161,15 +161,6 @@ _is_sqlite = _db_url.get_backend_name() == "sqlite"
 # End of Database Architecture Documentation
 # ==============================================================================
 
-engine_kwargs = {}
-if _is_sqlite:
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    engine_kwargs["pool_size"] = 20
-    engine_kwargs["max_overflow"] = 10
-
-engine = create_engine(DATABASE_URL, **engine_kwargs)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 from db.base import Base
 from db.models.auth import User, OTPVerification
 from db.models.analytics import (
@@ -191,11 +182,47 @@ from db.models.knowledge import KnowledgeInvalidation
 
 logger = logging.getLogger(__name__)
 
+# Lazy engine / session — created on first access so environment variables
+# are read at runtime (not at import time), enabling test isolation.
+_engine = None
+_session_local = None
+
+
+def _build_engine_kwargs():
+    if _is_sqlite:
+        return {"connect_args": {"check_same_thread": False}}
+    return {"pool_size": 20, "max_overflow": 10}
+
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(DATABASE_URL, **_build_engine_kwargs())
+    return _engine
+
+
+def get_session_local():
+    global _session_local
+    if _session_local is None:
+        _session_local = sessionmaker(
+            autocommit=False, autoflush=False, expire_on_commit=False, bind=get_engine()
+        )
+    return _session_local
+
+
+# Support `from database import SessionLocal` — resolves lazily.
+def __getattr__(name):
+    if name == "SessionLocal":
+        return get_session_local()
+    if name == "engine":
+        return get_engine()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Database initialization
 def init_db():
     """Create all tables"""
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())
 
 
 @contextmanager
@@ -204,7 +231,7 @@ def db_session():
     Context manager for database sessions.
     Ensures the session is closed after use, even if an exception occurs.
     """
-    db = SessionLocal()
+    db = get_session_local()
     try:
         yield db
         db.commit()
@@ -220,7 +247,7 @@ def get_db():
     Generator that yields a database session and ensures it's closed after use.
     Suitable for use as a FastAPI dependency or context manager.
     """
-    db = SessionLocal()
+    db = get_session_local()
     try:
         yield db
     finally:
@@ -721,8 +748,8 @@ def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
 
 def schedule_token_cleanup():
     """Standalone cleanup runner for cron/celery scheduling."""
-    from database import SessionLocal, cleanup_expired_revoked_tokens
-    db = SessionLocal()
+    from database import cleanup_expired_revoked_tokens
+    db = get_session_local()
     try:
         deleted = cleanup_expired_revoked_tokens(db)
         return deleted
