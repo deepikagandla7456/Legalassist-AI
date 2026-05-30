@@ -66,8 +66,12 @@ class IdempotencyManager:
     def _serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
-    def _deserialize(self, raw: Optional[bytes]) -> Optional[dict[str, Any]]:
+    @staticmethod
+    def _deserialize(raw: Optional[bytes], max_size: int = 10 * 1024 * 1024) -> Optional[dict[str, Any]]:
         if not raw:
+            return None
+        if len(raw) > max_size:
+            logger.warning("deserialization rejected: payload exceeds max_size", size=len(raw), max_size=max_size)
             return None
         try:
             return json.loads(raw.decode("utf-8"))
