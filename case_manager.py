@@ -56,6 +56,7 @@ from database import (
     get_attachments_for_case,
     save_case_note_draft,
 )
+from core.deadline_engine import get_deadline_first_action
 from db.case_service import get_case_note, publish_case_note, get_case_note_history
 from services.timeline_service import timeline_service as _timeline_service
 from services.deadlines_auto_creator import (
@@ -867,6 +868,7 @@ def add_manual_deadline(
             case_title=case_title,
             deadline_date=deadline_date,
             deadline_type=deadline_type,
+            first_action=get_deadline_first_action(deadline_type),
             description=description,
         )
         db.add(deadline)

@@ -71,6 +71,7 @@ from db.crud.notifications import (
 )
 from db.crud.audit import record_immutable_audit_event
 from core.template_renderer import render_template, validate_template, TemplateValidationError
+from core.deadline_engine import get_deadline_first_action
 from core.log_redaction import mask_recipient, sanitize_log_text
 from services.timeline_service import timeline_service as case_timeline_service
 
@@ -112,23 +113,11 @@ def _template_language_key(language: Optional[str]) -> str:
 
 
 def _derive_first_action(deadline: CaseDeadline) -> str:
-    description = (getattr(deadline, "description", "") or "").strip()
-    if description:
-        first_sentence = re.split(r"(?<=[.!?])\s+", description, maxsplit=1)[0].strip()
-        if len(first_sentence) > 140:
-            first_sentence = first_sentence[:137].rstrip() + "..."
-        return first_sentence
+    stored_action = (getattr(deadline, "first_action", None) or "").strip()
+    if stored_action:
+        return stored_action
 
-    deadline_type = str(getattr(deadline, "deadline_type", "") or "").strip().lower()
-    suggestions = {
-        "appeal": "Draft and file the appeal",
-        "filing": "Prepare and submit the filing",
-        "submission": "Gather the required documents and submit them",
-        "response": "Prepare the response and verify deadlines",
-        "hearing": "Review the hearing strategy and supporting documents",
-        "other": "Review the deadline details and plan the next step",
-    }
-    return suggestions.get(deadline_type, "Review the deadline details and plan the next step")
+    return get_deadline_first_action(getattr(deadline, "deadline_type", None))
 
 
 def _build_notification_template_values(
@@ -558,15 +547,17 @@ class NotificationService:
         self.email_client = email_client or EmailClient()
         self.base_url = Config.BASE_URL.rstrip('/')
 
-    def build_sms_message(self, case_title: str, days_left: int, deadline_date: datetime) -> str:
+    def build_sms_message(self, case_title: str, days_left: int, deadline_date: datetime, first_action: Optional[str] = None) -> str:
         """Build SMS reminder message"""
         formatted_date = deadline_date.strftime("%d %b %Y")
+        action = (first_action or "").strip()
+        action_text = f" Next action: {action}." if action else ""
         return (
             f"⚖️ LegalAssist: Case '{case_title}' has a deadline in {days_left} day(s). "
-            f"Deadline: {formatted_date}. Log in to check details."
+            f"Deadline: {formatted_date}.{action_text} Log in to check details."
         )
 
-    def build_email_message(self, deadline: CaseDeadline, days_left: int) -> Tuple[str, str]:
+    def build_email_message(self, deadline: CaseDeadline, days_left: int, first_action: Optional[str] = None) -> Tuple[str, str]:
         """
         Build a premium email reminder content.
         Uses modern HTML/CSS with glassmorphism-inspired design.
@@ -576,6 +567,7 @@ class NotificationService:
         escaped_title = html.escape(getattr(deadline, 'case_title', ''))
         escaped_type = html.escape(deadline.deadline_type.title())
         escaped_desc = html.escape(deadline.description) if deadline.description else "No additional details provided."
+        escaped_action = html.escape((first_action or _derive_first_action(deadline)).strip())
         
         # Urgency color coding
         if days_left <= 3:
@@ -609,6 +601,8 @@ class NotificationService:
                 .deadline-label {{ color: #888; font-size: 13px; text-transform: uppercase; font-weight: 600; display: block; }}
                 .deadline-value {{ font-size: 18px; color: #222; font-weight: 600; }}
                 .description {{ background: #f9f9f9; padding: 20px; border-radius: 8px; font-style: italic; color: #666; margin-top: 20px; border-left: 3px solid #ddd; }}
+                .next-action {{ background: #eef6ff; padding: 18px 20px; border-radius: 10px; margin-top: 20px; border-left: 4px solid {accent_color}; }}
+                .next-action-label {{ display: block; color: #1a5490; font-size: 13px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }}
                 .cta-button {{ display: inline-block; background: #1a5490; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 30px; font-weight: bold; margin-top: 30px; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(26, 84, 144, 0.3); }}
                 .footer {{ background: #f4f4f4; padding: 30px; text-align: center; color: #999; font-size: 12px; }}
                 .footer a {{ color: #1a5490; text-decoration: none; }}
@@ -643,6 +637,11 @@ class NotificationService:
                     <div class="deadline-label">Details</div>
                     <div class="description">
                         "{escaped_desc}"
+                    </div>
+
+                    <div class="next-action">
+                        <span class="next-action-label">Suggested Next Action</span>
+                        <span class="deadline-value">{escaped_action}</span>
                     </div>
 
                     <div style="text-align: center;">
@@ -704,6 +703,7 @@ class NotificationService:
                         getattr(deadline, "case_title", ""),
                         days_left,
                         deadline.deadline_date,
+                        _derive_first_action(deadline),
                     )
 
                 success, message_id, error = self.sms_client.send_sms(user_preference.phone_number, sms_message)
@@ -720,7 +720,7 @@ class NotificationService:
                     continue
 
                 if email_subject is None or email_html_content is None:
-                    email_subject, email_html_content = self.build_email_message(deadline, days_left)
+                    email_subject, email_html_content = self.build_email_message(deadline, days_left, _derive_first_action(deadline))
 
                 success, message_id, error = self.email_client.send_email(user_preference.email, email_subject, email_html_content)
                 final_channel = channel
@@ -826,7 +826,7 @@ class NotificationService:
             logger.exception("Error rendering user SMS template; falling back to default")
 
         if message is None:
-            message = self.build_sms_message(getattr(deadline, 'case_title', ''), days_left, deadline.deadline_date)
+            message = self.build_sms_message(getattr(deadline, 'case_title', ''), days_left, deadline.deadline_date, _derive_first_action(deadline))
 
         # Send SMS before writing to DB so a crash never leaves an orphan PENDING record.
         success, message_id, error = self.sms_client.send_sms(user_preference.phone_number, message)
@@ -910,7 +910,7 @@ class NotificationService:
             logger.exception("Error rendering user email template; falling back to default")
 
         if subject is None or html_content is None:
-            subject, html_content = self.build_email_message(deadline, days_left)
+            subject, html_content = self.build_email_message(deadline, days_left, _derive_first_action(deadline))
 
         # ====================================================================
         # ASYNCHRONOUS DELIVERY OFFLOAD

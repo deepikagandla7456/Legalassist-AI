@@ -147,3 +147,24 @@ def calculate_deadline(
 
 
 __all__ = ["calculate_deadline"]
+
+
+_DEADLINE_TYPE_FIRST_ACTIONS: Dict[str, str] = {
+    "appeal": "File appeal memo",
+    "filing": "Gather filing documents",
+    "submission": "Prepare and submit the required filing",
+    "response": "Draft the response and review supporting records",
+    "hearing": "Consult counsel and prepare the hearing bundle",
+    "order": "Review the order and confirm the next step",
+    "other": "Review the deadline details and plan the next step",
+    "manual": "Review the deadline details and plan the next step",
+}
+
+
+def get_deadline_first_action(deadline_type: Optional[str]) -> str:
+    """Return a short deterministic next-action suggestion for a deadline type."""
+    normalized = str(deadline_type or "other").strip().lower()
+    return _DEADLINE_TYPE_FIRST_ACTIONS.get(normalized, "Review the deadline details and plan the next step")
+
+
+__all__.append("get_deadline_first_action")
