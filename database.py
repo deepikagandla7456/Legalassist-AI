@@ -56,6 +56,8 @@ from db.crud.notifications import (
     has_notification_been_sent,
     log_notification,
     get_notification_history,
+    get_notification_template_for_user,
+    create_or_update_notification_template,
 )
 from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
 from db.otp_service import revoke_token, is_token_revoked, cleanup_expired_revoked_tokens
@@ -104,6 +106,8 @@ __all__ = [
     "has_notification_been_sent",
     "log_notification",
     "get_notification_history",
+    "get_notification_template_for_user",
+    "create_or_update_notification_template",
     "create_or_update_user_preference",
     "create_user",
     "get_user_by_email",
