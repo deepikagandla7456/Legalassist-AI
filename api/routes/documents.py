@@ -261,6 +261,11 @@ async def upload_document_file(
             allowed_mime_types=ValidationConfig.ALLOWED_MIME_TYPES,
         )
         
+        # Rewind the stream after validation (magic-bytes check in
+        # validate_file_upload reads from the underlying SpooledTemporaryFile
+        # directly, which can desync the UploadFile async wrapper).
+        await file.seek(0)
+
         # Read file content into memory, then validate size from the buffer.
         file_content = await file.read()
         file_bytes_read = len(file_content)
