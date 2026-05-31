@@ -102,6 +102,7 @@ from db.crud.notifications import (
 )
 from db.crud.audit import record_immutable_audit_event
 from core.template_renderer import render_template, validate_template, TemplateValidationError
+from core.deadline_engine import get_deadline_first_action
 from core.log_redaction import mask_recipient, sanitize_log_text
 from services.timeline_service import timeline_service as case_timeline_service
 
@@ -604,15 +605,17 @@ class NotificationService:
         self.email_client = EmailClient()
         self.base_url = Config.BASE_URL.rstrip('/')
 
-    def build_sms_message(self, case_title: str, days_left: int, deadline_date: datetime) -> str:
+    def build_sms_message(self, case_title: str, days_left: int, deadline_date: datetime, first_action: Optional[str] = None) -> str:
         """Build SMS reminder message"""
         formatted_date = deadline_date.strftime("%d %b %Y")
+        action = (first_action or "").strip()
+        action_text = f" Next action: {action}." if action else ""
         return (
             f"⚖️ LegalAssist: Case '{case_title}' has a deadline in {days_left} day(s). "
-            f"Deadline: {formatted_date}. Log in to check details."
+            f"Deadline: {formatted_date}.{action_text} Log in to check details."
         )
 
-    def build_email_message(self, deadline: CaseDeadline, days_left: int) -> Tuple[str, str]:
+    def build_email_message(self, deadline: CaseDeadline, days_left: int, first_action: Optional[str] = None) -> Tuple[str, str]:
         """
         Build a premium email reminder content.
         Uses modern HTML/CSS with glassmorphism-inspired design.
@@ -622,6 +625,7 @@ class NotificationService:
         escaped_title = html.escape(deadline.case_title)
         escaped_type = html.escape(deadline.deadline_type.title())
         escaped_desc = html.escape(deadline.description) if deadline.description else "No additional details provided."
+        escaped_action = html.escape((first_action or _derive_first_action(deadline)).strip())
         
         # Urgency color coding
         if days_left <= 3:
@@ -655,6 +659,8 @@ class NotificationService:
                 .deadline-label {{ color: #888; font-size: 13px; text-transform: uppercase; font-weight: 600; display: block; }}
                 .deadline-value {{ font-size: 18px; color: #222; font-weight: 600; }}
                 .description {{ background: #f9f9f9; padding: 20px; border-radius: 8px; font-style: italic; color: #666; margin-top: 20px; border-left: 3px solid #ddd; }}
+                .next-action {{ background: #eef6ff; padding: 18px 20px; border-radius: 10px; margin-top: 20px; border-left: 4px solid {accent_color}; }}
+                .next-action-label {{ display: block; color: #1a5490; font-size: 13px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }}
                 .cta-button {{ display: inline-block; background: #1a5490; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 30px; font-weight: bold; margin-top: 30px; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(26, 84, 144, 0.3); }}
                 .footer {{ background: #f4f4f4; padding: 30px; text-align: center; color: #999; font-size: 12px; }}
                 .footer a {{ color: #1a5490; text-decoration: none; }}
@@ -690,7 +696,12 @@ class NotificationService:
                     <div class="description">
                         "{escaped_desc}"
                     </div>
- 
+
+                    <div class="next-action">
+                        <span class="next-action-label">Suggested Next Action</span>
+                        <span class="deadline-value">{escaped_action}</span>
+                    </div>
+
                     <div style="text-align: center;">
                         <a href="{self.base_url}/cases/{deadline.case_id}" class="cta-button">
                             View Case Dashboard
@@ -709,6 +720,134 @@ class NotificationService:
         
         return subject, html_content
 
+    def _get_fallback_channel_order(self, user_preference: UserPreference) -> List[NotificationChannel]:
+        if user_preference.notification_channel == NotificationChannel.EMAIL:
+            return [NotificationChannel.EMAIL, NotificationChannel.SMS]
+        return [NotificationChannel.SMS, NotificationChannel.EMAIL]
+
+    def send_with_fallback(
+        self,
+        db: Session,
+        deadline: CaseDeadline,
+        user_preference: UserPreference,
+        days_left: int,
+    ) -> NotificationResult:
+        """Send a reminder using the first working channel and record the whole attempt chain."""
+        attempted_channels: List[str] = []
+        channel_order = self._get_fallback_channel_order(user_preference)
+        final_channel = channel_order[0]
+        final_recipient = user_preference.phone_number or user_preference.email or "unknown"
+        final_message_id: Optional[str] = None
+        final_error: Optional[str] = None
+        final_message_preview: Optional[str] = None
+        success = False
+
+        sms_message: Optional[str] = None
+        email_subject: Optional[str] = None
+        email_html_content: Optional[str] = None
+
+        for channel in channel_order:
+            attempted_channels.append(channel.value)
+
+            if channel == NotificationChannel.SMS:
+                if not user_preference.phone_number:
+                    final_channel = channel
+                    final_recipient = "unknown"
+                    final_error = "No phone number configured"
+                    continue
+
+                if sms_message is None:
+                    sms_message = self.build_sms_message(
+                        getattr(deadline, "case_title", ""),
+                        days_left,
+                        deadline.deadline_date,
+                        _derive_first_action(deadline),
+                    )
+
+                success, message_id, error = self.sms_client.send_sms(user_preference.phone_number, sms_message)
+                final_channel = channel
+                final_recipient = user_preference.phone_number
+                final_message_id = message_id
+                final_error = error
+                final_message_preview = _safe_preview(sms_message)
+            else:
+                if not user_preference.email:
+                    final_channel = channel
+                    final_recipient = "unknown"
+                    final_error = "No email address configured"
+                    continue
+
+                if email_subject is None or email_html_content is None:
+                    email_subject, email_html_content = self.build_email_message(deadline, days_left, _derive_first_action(deadline))
+
+                success, message_id, error = self.email_client.send_email(user_preference.email, email_subject, email_html_content)
+                final_channel = channel
+                final_recipient = user_preference.email
+                final_message_id = message_id
+                final_error = error
+                final_message_preview = _safe_preview(email_subject)
+
+            if success:
+                break
+
+        final_status = NotificationStatus.SENT if success else NotificationStatus.FAILED
+
+        try:
+            update_notification_result(
+                db=db,
+                deadline_id=deadline.id,
+                user_id=deadline.user_id,
+                days_before=days_left,
+                channel=final_channel,
+                status=final_status,
+                message_id=final_message_id,
+                error_message=final_error,
+                message_preview=final_message_preview,
+                recipient=final_recipient,
+                attempted_channels=attempted_channels,
+            )
+        except Exception:
+            logger.exception(
+                "fallback_notification_log_failed",
+                deadline_id=deadline.id,
+                user_id=deadline.user_id,
+                days_left=days_left,
+                attempted_channels=attempted_channels,
+            )
+
+        try:
+            record_immutable_audit_event(
+                event_type="notification.sent" if success else "notification.failed",
+                action="sent" if success else "failed",
+                actor_user_id=deadline.user_id,
+                resource_type="notification",
+                resource_id=f"fallback:{deadline.id}:{deadline.user_id}:{days_left}",
+                outcome="success" if success else "failure",
+                case_id=deadline.case_id,
+                metadata={
+                    "deadline_id": deadline.id,
+                    "days_left": days_left,
+                    "attempted_channels": attempted_channels,
+                    "final_channel": final_channel.value,
+                    "message_id": final_message_id,
+                    "error": final_error,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "fallback_notification_audit_failed",
+                deadline_id=deadline.id,
+                user_id=deadline.user_id,
+            )
+
+        return NotificationResult(
+            success=success,
+            channel=final_channel,
+            recipient=final_recipient,
+            message_id=final_message_id,
+            error=final_error,
+            attempted_channels=attempted_channels,
+        )
 
     def send_sms_reminder(
         self,
@@ -745,20 +884,7 @@ class NotificationService:
             logger.exception("Error rendering user SMS template; falling back to default")
 
         if message is None:
-            message = self.build_sms_message(deadline.case_title, days_left, deadline.deadline_date)
-        # Reserve a notification slot to avoid races
-        reserved_log, created = reserve_notification(
-            db=db,
-            deadline_id=deadline.id,
-            user_id=deadline.user_id,
-            channel=NotificationChannel.SMS,
-            recipient=user_preference.phone_number,
-            days_before=days_left,
-            message_preview=message,
-        )
-        if not created:
-            logger.debug("SMS reservation already exists; skipping send", deadline_id=deadline.id, days_before=days_left)
-            return NotificationResult(success=False, channel=NotificationChannel.SMS, recipient=user_preference.phone_number, error="Already sent")
+            message = self.build_sms_message(getattr(deadline, 'case_title', ''), days_left, deadline.deadline_date, _derive_first_action(deadline))
 
         if not _should_use_celery(send_sms_task):
             success, message_id, error = self.sms_client.send_sms(user_preference.phone_number, message)
@@ -889,7 +1015,7 @@ class NotificationService:
             logger.exception("Error rendering user email template; falling back to default")
 
         if subject is None or html_content is None:
-            subject, html_content = self.build_email_message(deadline, days_left)
+            subject, html_content = self.build_email_message(deadline, days_left, _derive_first_action(deadline))
 
 
         # ====================================================================

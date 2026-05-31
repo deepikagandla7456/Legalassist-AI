@@ -51,6 +51,7 @@ class CaseDeadline(Base):
     case_title = Column(String(255), nullable=False)
     deadline_date = Column(DateTime(timezone=True), nullable=False, index=True)
     deadline_type = Column(String(255), nullable=False)
+    first_action = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), onupdate=lambda: dt.datetime.now(dt.timezone.utc))

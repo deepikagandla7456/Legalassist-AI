@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from db.models.notifications import NotificationLog, NotificationStatus, NotificationChannel, NotificationTemplate, UserPreference
 from db.models.cases import CaseDeadline, Case
 from sqlalchemy.exc import IntegrityError
+from core.deadline_engine import get_deadline_first_action
 
 
 def get_or_create_notification_log(
@@ -223,6 +224,7 @@ def create_case_deadline(
         case_title=case_title,
         deadline_date=deadline_date,
         deadline_type=deadline_type,
+        first_action=get_deadline_first_action(deadline_type),
         description=description,
     )
     db.add(deadline)
