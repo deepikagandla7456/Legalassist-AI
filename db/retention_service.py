@@ -61,7 +61,7 @@ def archive_expired_cases(db: Session, cutoff_days: int, dry_run: bool = False) 
 
     q = (
         db.query(Case)
-        .filter(Case.status.notin_(active_statuses))
+        .filter(Case.status.in_(active_statuses))
         .filter(Case.updated_at < cutoff)
     )
     if dry_run:
@@ -174,12 +174,12 @@ def purge_expired_notifications(db: Session, cutoff_days: int, dry_run: bool = F
 
 
 def purge_expired_otl_tokens(db: Session, cutoff_days: int, dry_run: bool = False) -> tuple[list, int]:
-    """Delete OTP verification records past the cutoff."""
+    """Delete OTP tokens past their expiry time."""
     from db.models.auth import OTPVerification
 
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=cutoff_days)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=cutoff_days)
     q = db.query(OTPVerification).filter(
-        OTPVerification.created_at < cutoff
+        OTPVerification.expires_at < dt.datetime.now(dt.timezone.utc)
     )
     records = q.all()
     ids = [r.id for r in records]
