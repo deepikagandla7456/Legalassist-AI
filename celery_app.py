@@ -147,7 +147,6 @@ settings = get_settings()
 logger = structlog.get_logger(__name__)
 
 
-
 def build_task_context_headers(
     request_id: Optional[str] = None,
     context_user_id: Optional[str] = None,
@@ -333,6 +332,7 @@ else:
 # This includes serialization settings, time limits, and worker behavior.
 
 
+
 celery_app.conf.update(
     # Data Serialization
     # Using JSON for interoperability and security
@@ -356,6 +356,7 @@ celery_app.conf.update(
     # Max tasks per child prevents memory leaks in long-lived worker processes
     worker_max_tasks_per_child=1000,
     # Beat Schedule Configuration for periodic tasks
+ain
 
 
 # ============================================================================
@@ -688,7 +689,6 @@ def analyze_document_task(
             "remedies_evidence_spans": remedies_data.get("evidence_spans", []),
             "analysis_time_seconds": analysis_time,
             "processed_at": datetime.now(timezone.utc).isoformat()
-
         }
 
         logger.info(
@@ -837,9 +837,9 @@ def generate_report_task(
             db_report.job_id = self.request.id
             db.commit()
 
-    # Idempotency: avoid regenerating same report repeatedly
+    # Anonymization / Idempotency: avoid regenerating same report repeatedly
     idemp = IdempotencyManager()
-    idempotency_key = f"report:{user_id}:{case_id}:{report_type}:{format}:{privacy_profile}"
+    idempotency_key = f"report:{report_id}:{user_id}:{case_id}:{report_type}:{format}:{privacy_profile}"
     if not idemp.acquire(idempotency_key, ttl=600):
         existing = idemp.get_result(idempotency_key)
         logger.info(
@@ -1023,15 +1023,7 @@ def export_data_task(
 
         # Validate format
         if format not in ("csv", "json"):
-            return {
-                "export_id": None,
-                "file_path": None,
-                "file_size_bytes": 0,
-                "format": format,
-                "expires_in_hours": None,
-                "expires_at": None,
-                "created_at": None,
-            }
+            raise ValueError(f"Unsupported export format: {format}. Supported formats are 'csv' or 'json'.")
 
         try:
             int_user_id = int(user_id)
@@ -1066,10 +1058,19 @@ def export_data_task(
                     return "******"
             else:
                 digits = [c for c in recipient if c.isdigit()]
-                if len(digits) >= 7:
-                    return recipient[:3] + "*" * (len(recipient) - 7) + recipient[-4:]
-                else:
-                    return "*******"
+                masked_chars = []
+                digit_count = 0
+                for c in recipient:
+                    if c.isdigit():
+                        digit_count += 1
+                        # Mask digits except the first 3 and the last 4
+                        if digit_count > 3 and digit_count <= len(digits) - 4:
+                            masked_chars.append("*")
+                        else:
+                            masked_chars.append(c)
+                    else:
+                        masked_chars.append(c)
+                return "".join(masked_chars)
 
         with db_session() as db:
             # Query real user records
@@ -1389,10 +1390,6 @@ def cleanup_old_tasks() -> Dict[str, str]:
     cleanup_fn = getattr(backend, "cleanup", None)
     backend_name = backend.__class__.__name__ if backend else "unknown"
 
-    if callable(cleanup_fn):
-        cleanup_fn()
-        logger.info("cleanup_old_tasks_completed", backend=backend_name)
-        return {"status": "completed", "action": "cleanup", "backend": backend_name}
 
     logger.info("cleanup_old_tasks_noop", backend=backend_name, reason="backend_cleanup_not_supported")
     return {"status": "noop", "action": "cleanup", "backend": backend_name}
@@ -1516,6 +1513,7 @@ def purge_expired_data(self) -> Dict[str, Any]:
     )
 
     logger.info("Executing compliance: purge_expired_data")
+    # Perform cleanups on database backends including Celery Redis results pruning if active
 
     results = {}
     with db_session() as db:
