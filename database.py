@@ -9,7 +9,9 @@ working while the refactor continues.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from typing import Optional, List
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from db.base import Base
@@ -61,6 +63,56 @@ from db.crud.notifications import (
 )
 from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
 from db.otp_service import revoke_token, is_token_revoked, cleanup_expired_revoked_tokens
+
+_OTP_RATE_LIMIT_LOCK = threading.RLock()
+_OTP_RATE_LIMIT_EVENTS: dict[str, list[dt.datetime]] = {}
+
+
+def _otp_rate_limit_key(identifier: str) -> str:
+    return f"otp_rl:{identifier}"
+
+
+def _reserve_otp_rate_limit_slot(
+    db: Session,
+    email: str,
+    max_requests_per_hour: int,
+    requester_ip: Optional[str] = None,
+) -> bool:
+    """Reserve an OTP request slot for the email, with optional IP tracking."""
+    if max_requests_per_hour <= 0:
+        raise ValueError("Too many OTP requests. Please try again later.")
+
+    normalized_email = str(email).strip().lower()
+    if not normalized_email:
+        raise ValueError("OTP request email is required")
+
+    now = dt.datetime.now(dt.timezone.utc)
+    window_start = now - dt.timedelta(hours=1)
+
+    with _OTP_RATE_LIMIT_LOCK:
+        recent_email_requests = db.query(OTPVerification).filter(
+            func.lower(OTPVerification.email) == normalized_email,
+            OTPVerification.created_at >= window_start,
+        ).count()
+        if recent_email_requests >= max_requests_per_hour:
+            raise ValueError("Too many OTP requests. Please try again later.")
+
+        email_key = _otp_rate_limit_key(f"email:{normalized_email}")
+        email_events = _OTP_RATE_LIMIT_EVENTS.setdefault(email_key, [])
+        email_events[:] = [ts for ts in email_events if ts >= window_start]
+        if len(email_events) >= max_requests_per_hour:
+            raise ValueError("Too many OTP requests. Please try again later.")
+        email_events.append(now)
+
+        if requester_ip:
+            normalized_ip = str(requester_ip).strip().lower()
+            if normalized_ip:
+                ip_key = _otp_rate_limit_key(f"ip:{normalized_ip}")
+                ip_events = _OTP_RATE_LIMIT_EVENTS.setdefault(ip_key, [])
+                ip_events[:] = [timestamp for timestamp in ip_events if timestamp >= window_start]
+                ip_events.append(now)
+
+    return True
 
 
 __all__ = [
@@ -179,13 +231,22 @@ def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
     return user
 
 
-def create_otp_verification(db: Session, email: str, otp_hash: str, expires_at: dt.datetime) -> OTPVerification:
-    """Create a new OTP verification record"""
-    otp = OTPVerification(email=email, otp_hash=otp_hash, expires_at=expires_at)
-    db.add(otp)
-    db.commit()
-    db.refresh(otp)
-    return otp
+def create_otp_verification(
+    db: Session,
+    email: str,
+    otp_hash: str,
+    expires_at: dt.datetime,
+    max_requests_per_hour: int = 5,
+    requester_ip: Optional[str] = None,
+) -> OTPVerification:
+    """Create a new OTP verification record with rate limiting."""
+    with _OTP_RATE_LIMIT_LOCK:
+        _reserve_otp_rate_limit_slot(db, email, max_requests_per_hour, requester_ip=requester_ip)
+        otp = OTPVerification(email=email, otp_hash=otp_hash, expires_at=expires_at)
+        db.add(otp)
+        db.commit()
+        db.refresh(otp)
+        return otp
 
 
 def get_pending_otp(db: Session, email: str) -> Optional[OTPVerification]:
