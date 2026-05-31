@@ -179,8 +179,8 @@ class IdempotencyManager:
             return False
         except Exception as e:
             logger.error("idempotency_acquire_failed", key=key, error=str(e))
-            # Fail open: if Redis is unavailable, allow processing
-            return True
+            # Fail closed: if Redis is unavailable, deny lock acquisition
+            return False
 
     def heartbeat(self, key: str, ttl: int = 60) -> bool:
         """Renew the lease for a running task if this process owns the key."""

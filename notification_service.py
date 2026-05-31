@@ -94,6 +94,7 @@ from database import (
     get_notification_template_for_user,
     reserve_notification,
     update_notification_result,
+    SessionLocal,
 )
 from db.crud.notifications import (
     get_or_create_notification_log,
