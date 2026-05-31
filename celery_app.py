@@ -394,6 +394,8 @@ class TaskStatus:
 def analyze_document_task(self, user_id, document_id, text=None, file_bytes=None, document_type="unknown", file_path=None, file_url=None) -> Dict[str, Any]:
     db = SessionLocal()
     idemp = IdempotencyManager()
+    idempotency_key = f"doc:{user_id}:{document_id}"
+    start_time = datetime.utcnow()
     
     # 1. State Recovery
     state = PipelineStateManager.get_state(db, document_id)
