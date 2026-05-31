@@ -62,6 +62,7 @@ from database import (
     get_notification_template_for_user,
     reserve_notification,
     update_notification_result,
+    SessionLocal,
 )
 from db.crud.notifications import (
     get_or_create_notification_log,
@@ -641,19 +642,20 @@ class NotificationService:
         final_status = NotificationStatus.SENT if success else NotificationStatus.FAILED
 
         try:
-            update_notification_result(
-                db=db,
-                deadline_id=deadline.id,
-                user_id=deadline.user_id,
-                days_before=days_left,
-                channel=final_channel,
-                status=final_status,
-                message_id=final_message_id,
-                error_message=final_error,
-                message_preview=final_message_preview,
-                recipient=final_recipient,
-                attempted_channels=attempted_channels,
-            )
+            with SessionLocal() as notify_db:
+                update_notification_result(
+                    db=notify_db,
+                    deadline_id=deadline.id,
+                    user_id=deadline.user_id,
+                    days_before=days_left,
+                    channel=final_channel,
+                    status=final_status,
+                    message_id=final_message_id,
+                    error_message=final_error,
+                    message_preview=final_message_preview,
+                    recipient=final_recipient,
+                    attempted_channels=attempted_channels,
+                )
         except Exception:
             logger.exception(
                 "fallback_notification_log_failed",
@@ -853,10 +855,14 @@ class NotificationService:
 
         # Annotate the reserved record with a placeholder task id BEFORE dispatching,
         # so the worker never races against an uncommitted DB state.
-        reserved_log.message_id = f"task_pending"
-        reserved_log.message_preview = html_content
-        db.add(reserved_log)
-        db.commit()
+        with SessionLocal() as reserve_db:
+            log = reserve_db.query(type(reserved_log)).filter(
+                type(reserved_log).id == reserved_log.id
+            ).first()
+            if log:
+                log.message_id = "task_pending"
+                log.message_preview = html_content
+                reserve_db.commit()
 
         task_result = send_email_task.delay(
             to_email=user_preference.email,
