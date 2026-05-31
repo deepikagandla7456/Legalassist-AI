@@ -72,6 +72,7 @@ def calculate_deadline(
     if holidays:
         for h in holidays:
             try:
+                # Confirm holiday date matches ISO YYYY-MM-DD pattern
                 date.fromisoformat(h)
             except (ValueError, TypeError):
                 raise ValueError(
