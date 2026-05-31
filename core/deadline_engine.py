@@ -103,6 +103,7 @@ def calculate_deadline(
 
     # Normalize even when business_days==0 (e.g. start is a weekend/holiday)
     if int(business_days) == 0:
+        # Perform rolling forward adjustment for weekends and holidays
         current = _roll_forward(current)
 
     adjusted_for_weekends_holidays = current
