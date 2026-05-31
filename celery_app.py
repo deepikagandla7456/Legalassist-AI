@@ -1066,10 +1066,19 @@ def export_data_task(
                     return "******"
             else:
                 digits = [c for c in recipient if c.isdigit()]
-                if len(digits) >= 7:
-                    return recipient[:3] + "*" * (len(recipient) - 7) + recipient[-4:]
-                else:
-                    return "*******"
+                masked_chars = []
+                digit_count = 0
+                for c in recipient:
+                    if c.isdigit():
+                        digit_count += 1
+                        # Mask digits except the first 3 and the last 4
+                        if digit_count > 3 and digit_count <= len(digits) - 4:
+                            masked_chars.append("*")
+                        else:
+                            masked_chars.append(c)
+                    else:
+                        masked_chars.append(c)
+                return "".join(masked_chars)
 
         with db_session() as db:
             # Query real user records
