@@ -12,6 +12,7 @@ def _parse_date(value: Any, tz: str) -> datetime:
         try:
             dt = datetime.fromisoformat(str(value))
         except ValueError:
+            # Fall back to space-separated SQLite datetimes for Python 3.10
             dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
 
     if dt.tzinfo is None:
