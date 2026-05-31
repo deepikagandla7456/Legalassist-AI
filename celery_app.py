@@ -22,6 +22,7 @@ from core.app_utils import (
 )
 from api.idempotency import IdempotencyManager
 from api.validation import ValidationConfig
+from api.config import get_settings
 from db.crud.reports import update_report_status
 from db.session import db_session
 from database import Attachment, User, SessionLocal, get_case_by_id, get_case_document_by_id, update_case_document, create_timeline_event
