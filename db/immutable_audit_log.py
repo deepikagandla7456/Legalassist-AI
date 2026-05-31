@@ -116,7 +116,6 @@ def _get_audit_session():
     """
     from db.session import SessionLocal
     return SessionLocal()
-_audit_append_lock = threading.Lock()
 
 
 def append_audit_entry(
