@@ -584,13 +584,13 @@ def generate_report_task(
 
     try:
         # Mark task as started in DB
-        db = next(get_db())
-        update_report_status(
-            db,
-            report_id,
-            status="processing",
-            started_at=datetime.utcnow()
-        )
+        with db_session() as db:
+            update_report_status(
+                db,
+                report_id,
+                status="processing",
+                started_at=datetime.utcnow()
+            )
         
         # Step 1: Data Aggregation
         self.update_state(
@@ -640,15 +640,15 @@ def generate_report_task(
 
         # Update Report record with completion details
         file_path_str = str(generated.file_path)
-        db = next(get_db())
-        update_report_status(
-            db,
-            report_id,
-            status="completed",
-            file_path=file_path_str,
-            file_size_bytes=generated.file_size_bytes,
-            completed_at=datetime.utcnow()
-        )
+        with db_session() as db:
+            update_report_status(
+                db,
+                report_id,
+                status="completed",
+                file_path=file_path_str,
+                file_size_bytes=generated.file_size_bytes,
+                completed_at=datetime.utcnow()
+            )
 
         # Prepare the result metadata for the frontend
         result = {
@@ -681,14 +681,14 @@ def generate_report_task(
     except Exception as e:
         # Mark report as failed in DB
         try:
-            db = next(get_db())
-            update_report_status(
-                db,
-                report_id,
-                status="failed",
-                error_message=str(e),
-                completed_at=datetime.utcnow()
-            )
+            with db_session() as db:
+                update_report_status(
+                    db,
+                    report_id,
+                    status="failed",
+                    error_message=str(e),
+                    completed_at=datetime.utcnow()
+                )
         except Exception as db_err:
             logger.error("Failed to update report status on error", report_id=report_id, db_error=str(db_err))
         
