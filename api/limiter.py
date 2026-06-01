@@ -335,7 +335,14 @@ limiter = DistributedRateLimiter()
 
 
 def is_whitelisted(identifier: str) -> bool:
-    return identifier in WHITELIST
+    # resolve_rate_limit_identifier returns prefixed strings such as
+    # "ip:127.0.0.1" or "user:42", but WHITELIST stores bare values like
+    # "127.0.0.1".  Strip the type prefix before comparison so that
+    # localhost, loopback, and internal service identifiers are matched
+    # correctly.  The original identifier is also checked to support any
+    # future call sites that pass an unprefixed string directly.
+    _, _, bare_value = identifier.partition(":")
+    return bare_value in WHITELIST or identifier in WHITELIST
 
 
 def resolve_rate_limit_identifier(request: Request) -> str:
