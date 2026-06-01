@@ -503,7 +503,7 @@ def analyze_document_task(
         )
         return existing or {"status": "duplicate", "task_id": self.request.id}
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     try:
         # Phase 1: Text Pre-processing
@@ -662,7 +662,7 @@ def analyze_document_task(
             meta={"status": "Finalizing analysis results", "progress": 90},
         )
         
-        analysis_time = (datetime.utcnow() - start_time).total_seconds()
+        analysis_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         # Combine remedies into a structured array
         remedies_list = []
