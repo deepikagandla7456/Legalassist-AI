@@ -531,13 +531,16 @@ def upload_case_attachment(
             logger.error(f"Case {case_id} not found or not owned by user {user_id}")
             return None
 
+        # Sanitize filename to prevent directory traversal
+        safe_filename = os.path.basename(filename)
+
         # Save file to storage
-        stored_path, size = save_attachment(file_bytes, filename)
+        stored_path, size = save_attachment(file_bytes, safe_filename)
 
         att = create_attachment(
             db=db,
             user_id=user_id,
-            original_filename=filename,
+            original_filename=safe_filename,
             stored_path=stored_path,
             content_type=content_type,
             size_bytes=size,
@@ -588,12 +591,15 @@ def upload_case_document_file(
             logger.error(f"Case {case_id} not found or not owned by user {user_id}")
             return None
 
-        stored_path, size = save_attachment(file_bytes, filename)
+        # Sanitize filename to prevent directory traversal
+        safe_filename = os.path.basename(filename)
+
+        stored_path, size = save_attachment(file_bytes, safe_filename)
 
         att = create_attachment(
             db=db,
             user_id=user_id,
-            original_filename=filename,
+            original_filename=safe_filename,
             stored_path=stored_path,
             content_type=content_type,
             size_bytes=size,
