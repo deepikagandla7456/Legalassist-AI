@@ -132,6 +132,7 @@ from core.app_utils import (
     compress_text,
 )
 from api.validation import ValidationConfig
+from api.config import get_settings
 from db.crud.reports import update_report_status
 from db.session import db_session
 from database import Attachment, SessionLocal, get_case_by_id, get_case_document_by_id, update_case_document, create_timeline_event
