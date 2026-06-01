@@ -637,17 +637,18 @@ def main():
             st.warning("⚠️ This file is quite large. Processing may take longer than usual.")
             
         # Check page count
-        try:
-            pdf_reader = PdfReader(uploaded_file)
-            num_pages = len(pdf_reader.pages)
-            if num_pages > 100:
-                st.warning(f"⚠️ This document has {num_pages} pages. Summaries of very long judgments may be less precise.")
-            if num_pages > 1000:
-                st.error("🛑 Extremely large PDF (1000+ pages) detected. Character limits will be exceeded, leading to a very poor summary. Please upload a shorter excerpt.")
+        if file_ext == "pdf":
+            try:
+                pdf_reader = PdfReader(uploaded_file)
+                num_pages = len(pdf_reader.pages)
+                if num_pages > 100:
+                    st.warning(f"⚠️ This document has {num_pages} pages. Summaries of very long judgments may be less precise.")
+                if num_pages > 1000:
+                    st.error("🛑 Extremely large PDF (1000+ pages) detected. Character limits will be exceeded, leading to a very poor summary. Please upload a shorter excerpt.")
+                    is_valid_pdf = False
+            except Exception as e:
+                st.error("Could not read PDF metadata. The file might be corrupted.")
                 is_valid_pdf = False
-        except Exception as e:
-            st.error("Could not read PDF metadata. The file might be corrupted.")
-            is_valid_pdf = False
 
     st.markdown("---")
 
