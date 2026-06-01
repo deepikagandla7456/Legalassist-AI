@@ -28,6 +28,7 @@ from typing import Dict, Any, Optional
 import io
 import requests
 from types import SimpleNamespace
+from api.validation import validate_file_url, fetch_url_safe
 
 try:
     from celery import Celery, Task, chain
@@ -134,6 +135,9 @@ from core.app_utils import (
     compress_text,
 )
 from api.validation import ValidationConfig
+from api.config import get_settings
+from db.crud.reports import update_report_status
+from db.session import db_session
 from database import Attachment, SessionLocal, get_case_by_id, get_case_document_by_id, update_case_document, create_timeline_event
 
 # ============================================================================
@@ -145,7 +149,6 @@ settings = get_settings()
 
 # Initialize the structured logger for consistent logging across tasks
 logger = structlog.get_logger(__name__)
-initialize_observability_for_environment()
 
 
 # ============================================================================
@@ -534,16 +537,28 @@ def extract_document_text_task(
             extracted_text = extract_text_from_pdf(io.BytesIO(file_bytes))
         if not extracted_text:
             if file_url:
+                validate_file_url(file_url)
                 response = requests.get(file_url, timeout=30)
                 response.raise_for_status()
                 if len(response.content) > ValidationConfig.MAX_TEXT_LENGTH:
                     raise ValueError(f"Downloaded file too large: {len(response.content)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
                 content_type = response.headers.get("Content-Type", "")
                 if "application/pdf" in content_type or file_url.lower().endswith(".pdf"):
-                    extracted_text = extract_text_from_pdf(io.BytesIO(response.content))
+                    extracted_text = extract_text_from_pdf(io.BytesIO(resp.content))
                 else:
-                    extracted_text = response.content.decode("utf-8", errors="ignore")
+                    extracted_text = resp.content.decode("utf-8", errors="ignore")
             elif file_path:
+                # Ownership verification: the user must own an Attachment for this path
+                session = SessionLocal()
+                try:
+                    owned = session.query(Attachment).filter(
+                        Attachment.stored_path == file_path,
+                        Attachment.user_id == int(user_id),
+                    ).first()
+                    if not owned:
+                        raise ValueError("You do not have permission to access this file")
+                finally:
+                    session.close()
                 if os.path.getsize(file_path) > ValidationConfig.MAX_TEXT_LENGTH:
                     raise ValueError(f"File too large: {os.path.getsize(file_path)} bytes exceeds limit of {ValidationConfig.MAX_TEXT_LENGTH} bytes.")
                 if file_path.lower().endswith(".pdf"):
@@ -1648,7 +1663,7 @@ def purge_expired_data(self) -> Dict[str, Any]:
     from db.session import db_session
 
     logger.info("Executing compliance: purge_expired_data")
-
+    # Perform cleanups on database backends including Celery Redis results pruning if active
     results = {}
     with db_session() as db:
         seed_retention_rules(db)
