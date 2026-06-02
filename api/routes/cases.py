@@ -338,7 +338,7 @@ async def get_case_details(
         "case_id": case_id,
         "case_number": "2023-CV-00001",
         "title": "Example Case",
-        "parties": ["Smith", "Jones"],
+        "parties": [],
         "jurisdiction": "US",
         "status": "closed",
         "summary": "Case summary here"
