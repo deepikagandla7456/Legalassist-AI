@@ -295,7 +295,9 @@ def verify_otp_and_create_token(email: str, otp: str) -> Tuple[bool, str, Option
 
         # OTP is valid - reset failed attempts and mark as used
         reset_otp_failed_attempts(db, otp_record.id)
-        mark_otp_as_used(db, otp_record.id)
+        if not mark_otp_as_used(db, otp_record.id):
+            logger.warning("otp_already_consumed", email=email)
+            return False, "OTP has already been used. Please request a new one.", None
 
         # Get or create user
         user = get_user_by_email(db, email)
