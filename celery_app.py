@@ -1524,7 +1524,37 @@ def generate_report_task(
     format: str = "pdf",
     privacy_profile: str = "personal_identifiers",
 ) -> Dict[str, Any]:
-    """Asynchronous task to generate a formal report for a legal case."""
+    """
+    Asynchronous task to generate a formal report for a legal case.
+
+    Args:
+        user_id (str): The ID of the user requesting the report.
+        case_id (str): The ID of the case for which the report is generated.
+        report_id (str): Unique report UUID created by API.
+        report_type (str): The type of report (e.g., 'summary', 'comprehensive').
+        format (str): The output format ('pdf', 'html', etc.).
+    Returns:
+        Dict[str, Any]: Metadata about the generated report file.
+    """
+    # Defence-in-depth: validate format and report_type against allowlists even
+    # though the HTTP layer enforces Literal types.  Task arguments arrive via
+    # the Celery JSON queue and may bypass the API validation layer in some
+    # code paths (e.g. direct task invocation, replayed tasks, compromised
+    # brokers).  Rejecting unknown values here prevents path traversal and
+    # unexpected template selection inside generate_report().
+    _ALLOWED_FORMATS = {"pdf", "docx", "html"}
+    _ALLOWED_REPORT_TYPES = {"comprehensive", "summary", "legal_brief"}
+
+    if format not in _ALLOWED_FORMATS:
+        raise ValueError(
+            f"Invalid report format {format!r}. "
+            f"Allowed values: {sorted(_ALLOWED_FORMATS)}"
+        )
+    if report_type not in _ALLOWED_REPORT_TYPES:
+        raise ValueError(
+            f"Invalid report_type {report_type!r}. "
+            f"Allowed values: {sorted(_ALLOWED_REPORT_TYPES)}"
+        )
     from db.session import db_session
     from db.models.reports import Report
     from db.crud.reports import update_report_status
