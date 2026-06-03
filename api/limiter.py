@@ -179,6 +179,24 @@ class RateLimitExceeded(HTTPException):
         )
 
 
+import collections
+
+
+class InMemorySlidingWindowLimiter:
+    def __init__(self):
+        self.buckets = collections.defaultdict(list)
+
+    def check(self, key: str, limit: int, window_ms: int) -> tuple[bool, int]:
+        now_ms = int(time.time() * 1000)
+        clear_before = now_ms - window_ms
+        self.buckets[key] = [ts for ts in self.buckets[key] if ts > clear_before]
+        current_count = len(self.buckets[key])
+        if current_count < limit:
+            self.buckets[key].append(now_ms)
+            return True, current_count + 1
+        return False, current_count
+
+
 class DistributedRateLimiter:
     def __init__(self):
         self._redis: Optional[redis.Redis] = None
@@ -189,6 +207,7 @@ class DistributedRateLimiter:
         self.abuse_threshold = max(2, int(getattr(settings, "RATE_LIMIT_ABUSE_THRESHOLD", 3)))
         self.abuse_window = max(10, int(getattr(settings, "RATE_LIMIT_ABUSE_WINDOW", max(settings.RATE_LIMIT_WINDOW, 60))))
         self.abuse_block_seconds = max(30, int(getattr(settings, "RATE_LIMIT_ABUSE_BLOCK_SECONDS", 300)))
+        self._in_memory_fallback = InMemorySlidingWindowLimiter()
 
     async def get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -307,14 +326,18 @@ class DistributedRateLimiter:
 
             return allowed
         except Exception as exc:
-            logger.error(
-                "rate_limiter_error",
+            key = self._generate_key(identifier, endpoint)
+            window_ms = window_seconds * 1000
+            allowed, current_count = self._in_memory_fallback.check(key, limit, window_ms)
+            logger.warning(
+                "rate_limiter_redis_fallback_triggered",
                 error=str(exc),
                 identifier=identifier,
                 endpoint=endpoint,
-                fail_open=False,
+                allowed=allowed,
+                current_count=current_count,
             )
-            return False
+            return allowed
 
     async def get_remaining_ttl(
         self,
@@ -338,7 +361,18 @@ class DistributedRateLimiter:
             refill_rate = self._refill_rate(effective_limit, window_seconds)
             return max(1, int(math.ceil((1 - tokens) / refill_rate)))
         except Exception:
-            return window_seconds
+            try:
+                key = self._generate_key(identifier, endpoint)
+                timestamps = self._in_memory_fallback.buckets.get(key)
+                if not timestamps:
+                    return window_seconds
+                oldest_ts = timestamps[0]
+                now_ms = int(time.time() * 1000)
+                window_ms = window_seconds * 1000
+                expires_in = int((oldest_ts + window_ms - now_ms) / 1000)
+                return max(1, expires_in)
+            except Exception:
+                return window_seconds
 
     async def record_abuse_event(self, identifier: str, endpoint: str) -> int:
         try:
