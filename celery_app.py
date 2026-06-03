@@ -597,7 +597,7 @@ def analyze_document_task(
         )
         return existing or {"status": "duplicate", "task_id": self.request.id}
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     try:
         logger.info(
