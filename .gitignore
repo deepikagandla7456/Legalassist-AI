@@ -33,3 +33,6 @@ requirements.in
 .exports/
 
 .jwt_secret
+
+# Backup files
+*.bak
