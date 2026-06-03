@@ -1,13 +1,15 @@
 """
 API Rate Limiting and Middleware
 """
+import ipaddress
 import time
-from typing import Callable
+from typing import Callable, Optional
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 import redis
 import structlog
 
+from api.config import get_settings
 from observability.instrumentation import (
     bind_request_context,
     clear_request_context,
@@ -19,6 +21,39 @@ from observability.instrumentation import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _get_real_client_ip(request: Request) -> str:
+    """
+    Extract the real client IP from X-Forwarded-For when the direct peer
+    is a known trusted proxy.  Falls back to request.client.host otherwise.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    forwarded = request.headers.get("X-Forwarded-For")
+    if not forwarded:
+        return peer
+
+    settings = get_settings()
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+
+    trusted = any(
+        peer_ip in ipaddress.ip_network(cidr, strict=False)
+        for cidr in settings.TRUSTED_PROXIES
+    )
+    if not trusted:
+        return peer
+
+    # The leftmost address in X-Forwarded-For is the original client.
+    client_ip = forwarded.split(",")[0].strip()
+    try:
+        ipaddress.ip_address(client_ip)
+        return client_ip
+    except ValueError:
+        return peer
 
 
 class RateLimiter:
@@ -67,8 +102,8 @@ async def rate_limit_middleware(request: Request, call_next: Callable):
     if request.url.path in ["/api/v1/health", "/api/v1/health/ready", "/api/v1/health/live"]:
         return await call_next(request)
     
-    # Get client identifier
-    client_ip = request.client.host if request.client else "unknown"
+    # Get real client IP (supports trusted proxies and X-Forwarded-For)
+    client_ip = _get_real_client_ip(request)
     user_id = request.headers.get("X-User-Id", client_ip)
     
     rate_limiter = RateLimiter()
