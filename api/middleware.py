@@ -1,8 +1,9 @@
 """
 API Rate Limiting and Middleware
 """
+import json
 import time
-from typing import Callable
+from typing import Callable, Optional, Dict, Any, Union
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 import redis
@@ -58,6 +59,94 @@ return current
             return ttl if ttl > 0 else self.window
         except:
             return self.window
+
+
+def _normalize_key(key: Union[str, bytes]) -> str:
+    """Normalize a Redis key to str, decoding bytes if necessary.
+
+    Redis clients configured with decode_responses=False return keys as bytes;
+    clients with decode_responses=True return str.  This helper ensures string
+    operations (concatenation, replacement, slicing) work regardless of the
+    client configuration.
+    """
+    return key.decode("utf-8") if isinstance(key, bytes) else key
+
+
+class IdempotencyStore:
+    """Stores idempotent operation results in a single authoritative Redis key.
+
+    State metadata references the result key rather than embedding the result,
+    avoiding redundant storage of large payloads across multiple locations.
+
+    All internal key operations go through _normalize_key() so that callers
+    can pass keys obtained from Redis scan/keys commands (which may return
+    bytes) without type errors.
+    """
+
+    LOCK_SUFFIX = ":lock"
+
+    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
+        self.redis = redis.from_url(redis_url, decode_responses=True)
+
+    def get_result(self, key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a stored result from the single authoritative key."""
+        try:
+            key = _normalize_key(key)
+            data = self.redis.get(key)
+            return json.loads(data) if data else None
+        except Exception as e:
+            logger.error("IdempotencyStore.get_result error", error=str(e))
+            return None
+
+    def set_result(self, key: str, result: Dict[str, Any], ttl: int = 3600) -> None:
+        """Store a result in the authoritative key with TTL."""
+        try:
+            self.redis.setex(_normalize_key(key), ttl, json.dumps(result))
+        except Exception as e:
+            logger.error("IdempotencyStore.set_result error", error=str(e))
+
+    def try_acquire_lock(self, key: str, ttl: int = 60) -> bool:
+        """Atomically acquire an idempotency lock via SET NX."""
+        try:
+            lock_key = _normalize_key(key) + self.LOCK_SUFFIX
+            return bool(self.redis.set(lock_key, "1", nx=True, ex=ttl))
+        except Exception as e:
+            logger.error("IdempotencyStore.try_acquire_lock error", error=str(e))
+            return False
+
+    def release_lock(self, key: str) -> None:
+        """Release the idempotency lock."""
+        try:
+            lock_key = _normalize_key(key) + self.LOCK_SUFFIX
+            self.redis.delete(lock_key)
+        except Exception as e:
+            logger.error("IdempotencyStore.release_lock error", error=str(e))
+
+    def reconcile_stale_locks(self, pattern: str = "idempotency:*:lock", batch_size: int = 100) -> int:
+        """Scan Redis for stale lock keys matching *pattern* and delete them.
+
+        Uses SCAN (non-blocking) to iterate matching keys.  Each key is
+        normalized to str before deletion, preventing TypeError when Redis
+        returns bytes.
+
+        Returns the number of stale locks removed.
+        """
+        removed = 0
+        cursor = 0
+        while True:
+            try:
+                cursor, keys = self.redis.scan(cursor, match=pattern, count=batch_size)
+                for raw_key in keys:
+                    self.redis.delete(_normalize_key(raw_key))
+                    removed += 1
+                if cursor == 0:
+                    break
+            except Exception as e:
+                logger.error("IdempotencyStore.reconcile_stale_locks error", error=str(e))
+                break
+        if removed:
+            logger.info("IdempotencyStore reconciled stale locks", count=removed)
+        return removed
 
 
 async def rate_limit_middleware(request: Request, call_next: Callable):
