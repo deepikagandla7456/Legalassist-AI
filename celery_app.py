@@ -24,6 +24,13 @@ from typing import Dict, Any, Optional
 
 from celery import Celery, Task
 from celery.result import AsyncResult
+from celery.signals import before_task_publish
+
+try:
+    from opentelemetry import propagate, trace as otel_trace
+except ModuleNotFoundError:
+    propagate = None
+    otel_trace = None
 
 # Import project settings for fallback and other configurations
 from api.config import get_settings
@@ -40,6 +47,17 @@ settings = get_settings()
 # Initialize the structured logger for consistent logging across tasks
 logger = structlog.get_logger(__name__)
 initialize_observability_for_environment()
+
+
+# ============================================================================
+# TRACE CONTEXT PROPAGATION
+# ============================================================================
+
+@before_task_publish.connect
+def _inject_tracing_headers(sender=None, headers=None, **kwargs):
+    """Inject OpenTelemetry trace context into every task message."""
+    if propagate is not None:
+        propagate.inject(headers)
 
 
 # ============================================================================
@@ -60,6 +78,17 @@ class ContextTask(Task):
     autoretry_for = (Exception,)
     retry_kwargs = {'max_retries': 3}
     retry_backoff = True
+
+    def __call__(self, *args, **kwargs):
+        """Restore OpenTelemetry trace context from task headers before execution."""
+        if propagate is not None and otel_trace is not None and hasattr(self.request, 'headers'):
+            ctx = propagate.extract(carrier=self.request.headers)
+            token = otel_trace.context.attach(ctx)
+            try:
+                return super().__call__(*args, **kwargs)
+            finally:
+                otel_trace.context.detach(token)
+        return super().__call__(*args, **kwargs)
 
 
 # ============================================================================
