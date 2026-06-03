@@ -18,11 +18,11 @@ services:
     environment:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/legalassist
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-CHANGE-ME}@postgres:5432/legalassist
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - JWT_SECRET_KEY=your-secret-key-change-in-production
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CHANGE-ME-IN-PRODUCTION}
       - API_KEY_ENABLED=true
       - ENABLE_WEBSOCKET=true
       - CORS_ORIGINS=["http://localhost:3000", "http://localhost:8501", "http://localhost:8000"]
@@ -54,7 +54,7 @@ services:
     environment:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/legalassist
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-CHANGE-ME}@postgres:5432/legalassist
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
@@ -80,7 +80,7 @@ services:
     environment:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/legalassist
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-CHANGE-ME}@postgres:5432/legalassist
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
@@ -128,7 +128,7 @@ services:
       - "5432:5432"
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-CHANGE-ME}
       - POSTGRES_DB=legalassist
     volumes:
       - postgres_data:/var/lib/postgresql/data
