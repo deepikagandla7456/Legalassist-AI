@@ -198,14 +198,28 @@ def verify_token(token: str) -> Dict:
             if _is_token_revoked_cached(jti):
                 raise InvalidTokenError("Token has been revoked")
         return payload
+    except (TokenExpiredError, InvalidTokenError):
+        # Expected authentication failures — pass through to caller unchanged.
+        raise
     except jwt.ExpiredSignatureError:
         raise TokenExpiredError("Token has expired")
-    except jwt.InvalidIssuerError:
-        raise InvalidTokenError("Invalid token issuer")
-    except jwt.InvalidAudienceError:
-        raise InvalidTokenError("Invalid token audience")
-    except jwt.InvalidTokenError:
-        raise InvalidTokenError("Invalid token")
+    except jwt.InvalidIssuerError as exc:
+        raise InvalidTokenError("Invalid token issuer") from exc
+    except jwt.InvalidAudienceError as exc:
+        raise InvalidTokenError("Invalid token audience") from exc
+    except jwt.InvalidTokenError as exc:
+        raise InvalidTokenError(str(exc) or "Invalid token") from exc
+    except Exception as exc:
+        # Unexpected error (e.g. DB failure in revocation check, config error).
+        # Log with full detail so operators can diagnose; do NOT silently
+        # convert to a generic auth failure — that hides infrastructure problems.
+        logger.error(
+            "jwt_verify_token_unexpected_error",
+            error=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
 
 
 def revoke_jwt_token(token: str) -> bool:
