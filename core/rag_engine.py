@@ -1,5 +1,6 @@
 import logging
-from typing import List, Optional
+import re
+from typing import Dict, List, Optional
 import chromadb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -18,11 +19,88 @@ class LegalRAG:
             raise
             
         self.vector_store = None
+        # Section header pattern covers the most common legal document structures.
+        self.section_header_pattern = re.compile(
+            r"^(section\s+\d+[\w().:-]*|article\s+\d+[\w().:-]*"
+            r"|chapter\s+\d+[\w().:-]*|clause\s+\d+[\w().:-]*)",
+            re.IGNORECASE,
+        )
+        # chunk_size=1400 keeps every primary split below the 1800-char safety
+        # ceiling enforced in _split_into_section_chunks.
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=1400,
+            chunk_overlap=180,
             separators=["\n\n", "\n", ".", " ", ""]
         )
+        # Hard-cap slice width used as the final fallback when text_splitter
+        # cannot reduce a piece below MAX_CHUNK_SIZE (e.g. base64 blobs, tables
+        # with no standard separators).
+        self._HARD_CAP_SLICE = 1400
+        self._MAX_CHUNK_SIZE = 1800
+
+    def _is_section_header(self, line: str) -> bool:
+        """Return True when a line looks like a legal section / article header."""
+        stripped = line.strip()
+        if not stripped or len(stripped) > 160:
+            return False
+        return bool(self.section_header_pattern.match(stripped))
+
+    def _split_into_section_chunks(self, text: str) -> List[str]:
+        """Chunk text on section headers then enforce a strict size upper-bound.
+
+        Algorithm
+        ---------
+        1. Walk lines and collect runs between legal section headers into
+           coarse section blocks.
+        2. If no headers are found the text_splitter handles the whole doc.
+        3. For each coarse block that still exceeds MAX_CHUNK_SIZE:
+           a. Run text_splitter.split_text() as a semantic fallback.
+           b. Any piece that *still* exceeds MAX_CHUNK_SIZE (e.g. base64
+              blobs or tables without standard separators) is sliced in
+              HARD_CAP_SLICE windows.  This guarantees O(n) termination
+              and prevents infinite recursive fallback loops.
+        """
+        chunks: List[str] = []
+        current_lines: List[str] = []
+
+        for line in text.splitlines():
+            if self._is_section_header(line) and current_lines:
+                section_text = "\n".join(current_lines).strip()
+                if section_text:
+                    chunks.append(section_text)
+                current_lines = [line.strip()]
+                continue
+            current_lines.append(line)
+
+        if current_lines:
+            section_text = "\n".join(current_lines).strip()
+            if section_text:
+                chunks.append(section_text)
+
+        # No section headers found — fall back to pure size-based splitting.
+        if len(chunks) <= 1:
+            return self.text_splitter.split_text(text)
+
+        semantic_chunks: List[str] = []
+        for chunk in chunks:
+            if len(chunk) <= self._MAX_CHUNK_SIZE:
+                semantic_chunks.append(chunk)
+            else:
+                split_pieces = self.text_splitter.split_text(chunk)
+                for piece in split_pieces:
+                    if len(piece) > self._MAX_CHUNK_SIZE:
+                        # Hard-cap: linear slicing guarantees termination.
+                        # This handles unstructured blobs (base64, legal tables)
+                        # that the recursive splitter cannot reduce further.
+                        for i in range(0, len(piece), self._HARD_CAP_SLICE):
+                            sliced = piece[i:i + self._HARD_CAP_SLICE]
+                            if sliced.strip():
+                                semantic_chunks.append(sliced)
+                    else:
+                        if piece.strip():
+                            semantic_chunks.append(piece)
+
+        return semantic_chunks if semantic_chunks else self.text_splitter.split_text(text)
 
     def initialize_vector_store(self, text: str) -> bool:
         """Chunk the document and load it into an ephemeral vector store."""
@@ -32,7 +110,7 @@ class LegalRAG:
             
         try:
             LOGGER.info("Chunking document text...")
-            chunks = self.text_splitter.split_text(text)
+            chunks = self._split_into_section_chunks(text)
             LOGGER.info(f"Split document into {len(chunks)} chunks.")
             
             # Create vector store in memory using EphemeralClient
