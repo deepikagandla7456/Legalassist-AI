@@ -94,6 +94,45 @@ from database import (
 
 logger = structlog.get_logger(__name__)
 
+# ==============================================================================
+# CROSS-TAB LOGOUT SYNCHRONIZATION
+#
+# Injected JavaScript that writes logout events to localStorage and listens for
+# the browser-native ``storage`` event.  When another tab logs out, all open
+# tabs reload and return to the login page.
+# ==============================================================================
+
+_CROSS_TAB_SYNC_JS = """
+<script>
+(function() {
+    var LS_LOGOUT = 'la_logout_ts';
+    var LS_AUTH = 'la_auth_ts';
+
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('_lo') === '1') {
+        localStorage.setItem(LS_LOGOUT, Date.now().toString());
+        var url = new URL(window.location.href);
+        url.searchParams.delete('_lo');
+        window.history.replaceState({}, '', url.toString());
+    }
+
+    var logoutTs = parseInt(localStorage.getItem(LS_LOGOUT) || '0', 10);
+    var authTs = parseInt(localStorage.getItem(LS_AUTH) || '0', 10);
+    if (logoutTs > authTs) {
+        localStorage.removeItem(LS_AUTH);
+        window.location.href = window.location.origin + '/';
+    }
+
+    window.addEventListener('storage', function(e) {
+        if (e.key === LS_LOGOUT) {
+            window.location.href = window.location.origin + '/';
+        }
+    });
+})();
+</script>
+"""
+
+
 def _is_debug_or_testing_mode() -> bool:
     """Return True when explicit debug/testing flags are enabled."""
     return Config.DEBUG or Config.TESTING
@@ -679,6 +718,8 @@ def force_logout_all_tabs():
     st.session_state.is_authenticated = False
     st.session_state.session_nonce = None
 
+    st.markdown(_CROSS_TAB_SYNC_JS, unsafe_allow_html=True)
+
 
 def login_user(email: str) -> bool:
     """
@@ -795,8 +836,11 @@ def logout_user():
             # been removed by another process/thread (unlikely but safe).
             pass
             
-    logger.info("auth_session_state_cleared", cleared_keys=len(all_keys))
-    
+    logger.info(f"Successfully cleared {len(all_keys)} session state keys.")
+
+    # Signal other tabs to also log out via query param (picked up by JS).
+    st.query_params["_lo"] = "1"
+
     # NOTE: The caller (e.g., app.py) is responsible for calling st.rerun()
     # to restart the UI flow after this function returns.
 
