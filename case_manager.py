@@ -321,7 +321,7 @@ def get_case_detail(user_id: int, case_id: int) -> Optional[Dict[str, Any]]:
             for event in timeline
         ]
 
-        comments = get_case_comments(db, case_id)
+        comments = get_case_comments(db, case_id, user_id)
         comments_list = [
             {
                 "id": comment.id,
