@@ -8,7 +8,7 @@ import hashlib
 import secrets
 import time
 import re
-from routes import PAGE_LOGIN
+from config import PAGE_LOGIN
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Any
