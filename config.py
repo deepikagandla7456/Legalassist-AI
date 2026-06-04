@@ -113,8 +113,8 @@ class Config:
     JWT_EXPIRY_HOURS = _get_int_env("JWT_EXPIRY_HOURS", 7 * 24)
     OTP_EXPIRY_MINUTES = _get_int_env("OTP_EXPIRY_MINUTES", 10)
     OTP_MAX_ATTEMPTS = _get_int_env("OTP_MAX_ATTEMPTS", 3)
-    JWT_ISSUER = _get_val("JWT_ISSUER", "legalassist.ai")
-    JWT_AUDIENCE = _get_val("JWT_AUDIENCE", "legalassist-users")
+    OTP_RATE_LIMIT_HOURS = _get_int_env("OTP_RATE_LIMIT_HOURS", 1)
+    OTP_RATE_LIMIT_MAX = _get_int_env("OTP_RATE_LIMIT_MAX", 3)
     
     @classmethod
     def get_jwt_secret(cls):

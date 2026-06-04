@@ -9,8 +9,27 @@ working while the refactor continues.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import threading
-import time
+from typing import Optional, List
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    DateTime,
+    Boolean,
+    Text,
+    ForeignKey,
+    Enum as SQLEnum,
+    JSON,
+    UniqueConstraint,
+    Index,
+)
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
+import enum
+from contextlib import contextmanager
 from config import Config
 try:
     import redis
@@ -553,8 +572,136 @@ def get_user_feedback(db: Session, user_id: int) -> List[UserFeedback]:
     return db.query(UserFeedback).filter(UserFeedback.user_id == user_id).order_by(UserFeedback.created_at.desc()).all()
 
 
-def get_user_deadlines(db: Session, user_id: int) -> List[CaseDeadline]:
-    """Get all active deadlines for a user"""
+# ==================== User & Authentication Helper Functions ====================
+
+
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    """Get user by email address"""
+    return db.query(User).filter(User.email == email).first()
+
+
+def create_user(db: Session, email: str) -> User:
+    """Create a new user"""
+    user = User(email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_user_last_login(db: Session, user_id: int) -> User:
+    """Update user's last login timestamp"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.last_login = dt.datetime.now(dt.timezone.utc)
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+# Thread lock for OTP rate-limit enforcement (single source of truth).
+_otp_rate_limit_lock = threading.Lock()
+
+
+def create_otp_verification(
+    db: Session,
+    email: str,
+    otp_hash: str,
+    expires_at: dt.datetime,
+    max_requests_per_hour: int = 5,
+) -> OTPVerification:
+    """Create a new OTP verification record with rate limiting.
+
+    This is the single source of truth for OTP rate-limit enforcement.
+    All callers (auth.py, API routes, etc.) must go through this function to
+    ensure consistent throttling behavior across the entire application.
+    """
+    with _otp_rate_limit_lock:
+        one_hour_ago = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
+        recent_otps = db.query(OTPVerification).filter(
+            OTPVerification.email == email,
+            OTPVerification.created_at >= one_hour_ago,
+        ).count()
+
+        if recent_otps >= max_requests_per_hour:
+            raise ValueError("Too many OTP requests. Please try again later.")
+
+        otp = OTPVerification(
+            email=email,
+            otp_hash=otp_hash,
+            expires_at=expires_at,
+        )
+        db.add(otp)
+        db.commit()
+        db.refresh(otp)
+        return otp
+
+
+def get_pending_otp(db: Session, email: str) -> Optional[OTPVerification]:
+    """Get unused, non-expired OTP for email"""
+    now = dt.datetime.now(dt.timezone.utc)
+    return db.query(OTPVerification).filter(
+        OTPVerification.email == email,
+        OTPVerification.is_used == False,
+        OTPVerification.expires_at > now,
+    ).order_by(OTPVerification.created_at.desc()).first()
+
+
+def mark_otp_as_used(db: Session, otp_id: int) -> bool:
+    """Mark an OTP as used"""
+    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
+    if otp:
+        otp.is_used = True
+        db.commit()
+        return True
+    return False
+
+
+def record_otp_failed_attempt(db: Session, otp_id: int, lockout_duration_minutes: int = 15, max_failed_attempts: int = 5) -> bool:
+    """
+    Record a failed OTP verification attempt and implement lockout after max attempts.
+    
+    Args:
+        db: Database session
+        otp_id: OTP record ID
+        lockout_duration_minutes: Minutes to lock OTP after max attempts exceeded
+        max_failed_attempts: Maximum failed attempts before lockout
+    
+    Returns:
+        True if updated, False if OTP not found
+    """
+    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
+    if otp:
+        otp.failed_attempts += 1
+        
+        # Lock OTP if max attempts exceeded
+        if otp.failed_attempts >= max_failed_attempts:
+            otp.locked_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=lockout_duration_minutes)
+            logger.warning(
+                f"OTP for {otp.email} locked after {otp.failed_attempts} failed attempts. "
+                f"Locked until {otp.locked_until}"
+            )
+        
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
+
+
+def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
+    """Reset failed attempt counter on successful verification"""
+    otp = db.query(OTPVerification).filter(OTPVerification.id == otp_id).first()
+    if otp:
+        otp.failed_attempts = 0
+        otp.locked_until = None
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
+
+
+def cleanup_expired_otps(db: Session) -> int:
+    """Delete expired OTPs, return count of deleted"""
     now = dt.datetime.now(dt.timezone.utc)
     return db.query(CaseDeadline).filter(
         CaseDeadline.user_id == user_id,
