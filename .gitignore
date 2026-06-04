@@ -9,6 +9,13 @@ env/
 
 # Environment variables
 .env
+.env.production
+.env.local
+.env.*.local
+
+# Secrets
+.jwt_secret
+*.secret
 
 # Streamlit secrets
 .streamlit/secrets.toml
@@ -30,3 +37,15 @@ htmlcov/
 requirements.txt
 requirements.in
 /.venv
+
+# Test cache
+.pytest_cache/
+
+# Runtime / user-generated data
+attachments/
+scratch/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
