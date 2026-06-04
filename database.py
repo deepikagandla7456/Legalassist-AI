@@ -343,6 +343,24 @@ def get_user_cases(db: Session, user_id: int) -> List[Case]:
     """Get all cases for a user"""
     return db.query(Case).filter(Case.user_id == user_id).order_by(Case.created_at.desc()).all()
 
+    # Validate deadline date is not in the past
+    if deadline_date.tzinfo is None:
+        deadline_date = deadline_date.replace(tzinfo=dt.timezone.utc)
+    if deadline_date < dt.datetime.now(dt.timezone.utc):
+        raise ValueError("Deadline date must be in the future")
+
+    deadline = CaseDeadline(
+        user_id=user_id,
+        case_id=normalized_case_id,
+        case_title=case_title,
+        deadline_date=deadline_date,
+        deadline_type=deadline_type,
+        description=description,
+    )
+    db.add(deadline)
+    db.commit()
+    db.refresh(deadline)
+    return deadline
 
 def get_case_by_id(db: Session, case_id: int) -> Optional[Case]:
     """Get a case by ID"""
