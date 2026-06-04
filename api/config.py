@@ -271,12 +271,11 @@ class ConfigSanitizer:
     
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
-    RATE_LIMIT_REQUESTS: int = 100  # requests
+    RATE_LIMIT_REQUESTS: int = 100  # requests per endpoint window
     RATE_LIMIT_WINDOW: int = 60  # seconds
     RATE_LIMIT_BURST: int = 200  # max burst
-
-    # Trusted proxies for client-IP resolution
-    TRUSTED_PROXIES: list = ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+    GLOBAL_RATE_LIMIT_REQUESTS: int = 200  # requests across all endpoints
+    GLOBAL_RATE_LIMIT_WINDOW: int = 60  # seconds
     
     # Authentication
     AUTH_ENABLED: bool = True
