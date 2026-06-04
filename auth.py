@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 """
 Authentication system for LegalAssist AI.
 Email-based OTP authentication with JWT session management.
@@ -129,6 +127,14 @@ OTP_REQUEST_RATE_LIMIT_MAX = int(os.getenv("OTP_REQUEST_RATE_LIMIT_MAX", str(Con
 OTP_REQUEST_RATE_LIMIT_HOURS = int(os.getenv("OTP_REQUEST_RATE_LIMIT_HOURS", str(Config.OTP_REQUEST_RATE_LIMIT_HOURS)))
 
 
+def _hash_otp(otp: str) -> str:
+    """Hash OTP code before storing"""
+    return hashlib.sha256(otp.encode()).hexdigest()
+
+
+def _verify_otp_hash(otp: str, otp_hash: str) -> bool:
+    """Verify OTP against stored hash using constant-time comparison"""
+    return secrets.compare_digest(_hash_otp(otp), otp_hash)
 OTP_HASH_ITERATIONS = 100000
 
 def _hash_otp(otp: str, email: str) -> str:
@@ -293,6 +299,9 @@ def verify_otp_and_create_token(email: str, otp: str) -> Tuple[bool, str, Option
     - Track failed verification attempts per OTP
     - Lock OTP after max failed attempts
     - Require user to request a new OTP after lockout
+    - Constant-time execution path: all failure branches perform the same
+      cryptographic work so an attacker cannot infer account state from
+      response latency (timing side-channel).
     """
     db = SessionLocal()
     try:
@@ -334,7 +343,7 @@ def verify_otp_and_create_token(email: str, otp: str) -> Tuple[bool, str, Option
                     recipient=mask_email(email),
                     failed_attempts=otp_record.failed_attempts,
                 )
-            
+
             logger.info(
                 "otp_verification_failed",
                 recipient=mask_email(email),
