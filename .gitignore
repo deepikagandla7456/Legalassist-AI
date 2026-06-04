@@ -9,6 +9,13 @@ env/
 
 # Environment variables
 .env
+.env.production
+.env.local
+.env.*.local
+
+# Secrets
+.jwt_secret
+*.secret
 
 # Secret files — must never be committed
 .jwt_secret
@@ -41,9 +48,15 @@ htmlcov/
 requirements.txt
 requirements.in
 /.venv
-.exports/
 
-.jwt_secret
+# Test cache
+.pytest_cache/
 
-# Backup files
-*.bak
+# Runtime / user-generated data
+attachments/
+scratch/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
