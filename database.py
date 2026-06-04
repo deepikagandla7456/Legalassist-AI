@@ -66,6 +66,9 @@ from db.models import (
     CaseDocument,
     Attachment,
     CaseTimeline,
+    CaseNote,
+    CaseComment,
+    CasePresence,
     CaseStatus,
     DocumentType,
     UserFeedback,
@@ -90,6 +93,13 @@ from db.crud.notifications import (
     log_notification,
     get_notification_history,
 )
+from db.crud.comments import (
+    create_case_comment,
+    get_case_comments,
+    upsert_case_presence,
+    get_case_presence,
+)
+from db.case_service import save_case_note_draft
 
 __all__ = [
     "Base",
@@ -110,6 +120,9 @@ __all__ = [
     "CaseDocument",
     "Attachment",
     "CaseTimeline",
+    "CaseNote",
+    "CaseComment",
+    "CasePresence",
     "CaseStatus",
     "DocumentType",
     "User",
@@ -165,6 +178,11 @@ __all__ = [
     "create_timeline_event",
     "create_attachment",
     "get_attachments_for_case",
+    "create_case_comment",
+    "get_case_comments",
+    "upsert_case_presence",
+    "get_case_presence",
+    "save_case_note_draft",
 ]
 
 
