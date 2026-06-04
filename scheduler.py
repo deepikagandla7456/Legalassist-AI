@@ -143,8 +143,7 @@ def check_and_send_reminders():
     
     PROCESSING WORKFLOW:
     --------------------
-    1. Database Initialization: Ensures tables exist.
-    2. Data Retrieval: Fetches all deadlines occurring within the next 31 days.
+    1. Data Retrieval: Fetches all deadlines occurring within the next 31 days.
        (We use 31 days to safely capture the 30-day threshold).
     3. Iteration & Filtering:
        a. Computes exact days remaining.
@@ -188,9 +187,6 @@ def check_and_send_reminders():
     logger.info("=" * 60)
     logger.info("Starting deadline reminder check job")
     logger.info(f"Check time: {datetime.now(timezone.utc)} UTC")
-
-    # Ensure tables exist when running from a fresh DB.
-    init_db()
 
     db = SessionLocal()
     try:
