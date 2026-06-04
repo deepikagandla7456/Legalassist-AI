@@ -14,9 +14,7 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 
 from api.config import get_settings
-from api.errors import StructuredAPIError
-from database import SessionLocal
-from db.models import APIKey, User
+from database import SessionLocal, is_token_revoked
 
 # Import canonical JWT utilities from shared module
 from api.jwt_auth import (
@@ -63,18 +61,44 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plain password against a bcrypt hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
-def get_password_hash(password: str) -> str:
-    """Generate a bcrypt hash for a password with cost factor 14."""
-    return pwd_context.hash(password)
+def verify_token(token: str) -> Dict:
+    """Verify JWT token and check revocation status.
 
+    Uses a context-manager-scoped database session for the revocation
+    check so the connection is released on every exit path — normal
+    return, HTTPException, or any unexpected error — preventing the
+    connection leaks that occur when raising inside a bare try/finally
+    block under certain async execution contexts.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired"
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
 
-# JWT token functions delegated to `api.jwt_auth`.
-# The local _get_jwt_secrets_to_try and revoke_jwt_token definitions that
-# previously lived here have been removed.  They duplicated the canonical
-# implementations in api.jwt_auth but with a subtle security difference:
-# the local revoke_jwt_token omitted "nbf" from the require list, meaning
-# a token crafted without a not-before claim could bypass the nbf check on
-# the revocation code path.  All callers now use the imported functions.
+    # Check token revocation (JTI blacklist) using a structured context
+    # manager so the DB session is guaranteed to close on all code paths.
+    jti = payload.get("jti")
+    if jti:
+        with SessionLocal() as db:
+            if is_token_revoked(db, jti):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked"
+                )
+
+    return payload
 
 
 # ============================================================================
