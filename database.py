@@ -67,6 +67,8 @@ from db.models import (
     Attachment,
     CaseTimeline,
     CaseNote,
+    CaseNoteVersion,
+    AnonymizedShareToken,
     CaseComment,
     CasePresence,
     CaseStatus,
@@ -404,13 +406,79 @@ def update_case_status(db: Session, case_id: int, status: CaseStatus) -> Optiona
 
 
 def delete_case(db: Session, case_id: int) -> bool:
-    """Delete a case and all related data"""
+    """Delete a case and all related data.
+
+    Explicitly removes dependent rows in FK-constraint-safe order before
+    deleting the parent Case record.  Relying solely on ORM-level
+    ``cascade="all, delete-orphan"`` can fail on PostgreSQL (and other
+    databases that enforce referential integrity at the engine level) when
+    related objects are not already loaded into the current session,
+    causing the DELETE to hit a foreign-key violation before SQLAlchemy's
+    lazy-loader can clean them up.
+
+    Deletion order (deepest child first):
+        CaseNoteVersion  -> CaseNote
+        CaseComment (self-referencing replies cascade via FK ondelete)
+        CaseTimeline, CasePresence, Attachment, CaseDocument
+        AnonymizedShareToken, CaseDeadline
+        Case (parent)
+    """
     case = db.query(Case).filter(Case.id == case_id).first()
-    if case:
+    if not case:
+        return False
+
+    try:
+        # --- leaf tables (no children of their own) ---
+        # CaseNoteVersion references both case_notes.id AND cases.id;
+        # remove it before CaseNote to satisfy both FK constraints.
+        db.query(CaseNoteVersion).filter(
+            CaseNoteVersion.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        # Self-referencing replies are handled by ondelete="CASCADE" on
+        # the parent_comment_id FK, so deleting top-level comments is
+        # sufficient — but we must delete all of them before the Case.
+        db.query(CaseComment).filter(
+            CaseComment.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(CaseNote).filter(
+            CaseNote.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(CaseTimeline).filter(
+            CaseTimeline.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(CasePresence).filter(
+            CasePresence.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        # Attachments may reference case_documents.id (SET NULL) — delete
+        # attachments before documents to avoid that nullable FK being
+        # needed after document rows are gone.
+        db.query(Attachment).filter(
+            Attachment.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(CaseDocument).filter(
+            CaseDocument.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(AnonymizedShareToken).filter(
+            AnonymizedShareToken.case_id == case_id
+        ).delete(synchronize_session=False)
+
+        db.query(CaseDeadline).filter(
+            CaseDeadline.case_id == case_id
+        ).delete(synchronize_session=False)
+
         db.delete(case)
         db.commit()
         return True
-    return False
+    except Exception:
+        db.rollback()
+        raise
 
 
 def create_case_document(
