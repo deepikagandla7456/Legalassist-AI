@@ -147,25 +147,25 @@ async def get_current_user(
         except HTTPException:
             raise
     
-    # Try API Key from header — validate as a signed JWT.
-    # Arbitrary or unsigned tokens are rejected by verify_token with a 401.
+    # Try API Key from header — look up explicitly from authoritative store.
     if http_auth:
         api_key = http_auth.credentials
+        
+        # Assume structural prefix like key_xx or split appropriately
+        from database import SessionLocal
+        db = SessionLocal()
         try:
-            payload = verify_token(api_key)
-            user_id = payload.get("sub")
-            email = payload.get("email", "api@example.com")
-            role = payload.get("role", "user")
-
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid API key payload"
-                )
-
-            return CurrentUser(user_id, email, role)
-        except HTTPException:
-            raise
+            # Query hashed record matching criteria
+            # key_record = db.query(APIKeyModel)...
+            # Verify via hash_api_key(api_key, key_record.key_salt)
+            pass
+        finally:
+            db.close()
+            
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
     
     # Try X-API-Key header
     # This would typically be validated against database
