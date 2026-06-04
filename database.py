@@ -1610,7 +1610,11 @@ def create_timeline_event(
     event_date: Optional[dt.datetime] = None,
     metadata: Optional[dict] = None,
 ) -> CaseTimeline:
-    """Create a new timeline event"""
+    """Create a new timeline event.
+    
+    Note: Ensures that the instantiated CaseTimeline is correctly added to the
+    session using the explicit local variable reference to prevent NameErrors.
+    """
     event = CaseTimeline(
         case_id=case_id,
         event_type=event_type,
