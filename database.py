@@ -10,6 +10,13 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+import time
+from config import Config
+try:
+    import redis
+except ImportError:
+    redis = None
+
 from typing import Optional, List
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -262,6 +269,42 @@ def cleanup_expired_otps(db: Session) -> int:
     return deleted
 
 
+def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken:
+    token = RevokedToken(jti=jti, expires_at=expires_at)
+    db.add(token)
+    db.commit()
+    db.refresh(token)
+    return token
+
+
+def cleanup_expired_revoked_tokens(db: Session, batch_size: int = 1000) -> int:
+    """Delete expired revoked tokens in batches to avoid lock contention."""
+    now = dt.datetime.now(dt.timezone.utc)
+    total_deleted = 0
+
+    while True:
+        deleted = db.query(RevokedToken).filter(
+            RevokedToken.expires_at < now
+        ).limit(batch_size).delete(synchronize_session=False)
+        db.commit()
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
+
+
+def schedule_token_cleanup():
+    """Standalone cleanup runner for cron/celery scheduling."""
+    from database import SessionLocal, cleanup_expired_revoked_tokens
+    db = SessionLocal()
+    try:
+        deleted = cleanup_expired_revoked_tokens(db)
+        return deleted
+    finally:
+        db.close()
+
+
 def create_case(db: Session, user_id: int, case_number: str, case_type: str, jurisdiction: str, title: Optional[str] = None) -> Case:
     """Create a new case"""
     case = Case(
@@ -377,10 +420,23 @@ def get_case_record(db: Session, hashed_case_id: str) -> Optional[CaseRecord]:
     return db.query(CaseRecord).filter(CaseRecord.hashed_case_id == hashed_case_id).first()
 
 
+ALLOWED_CASE_FILTER_FIELDS = frozenset({
+    "case_type",
+    "jurisdiction",
+    "court_name",
+    "judge_name",
+    "plaintiff_type",
+    "defendant_type",
+    "outcome",
+})
+
+
 def get_cases_by_criteria(db: Session, **criteria) -> List[CaseRecord]:
-    """Search case records by criteria"""
+    """Search case records by approved criteria fields only."""
     query = db.query(CaseRecord)
     for key, value in criteria.items():
+        if key not in ALLOWED_CASE_FILTER_FIELDS:
+            continue
         if hasattr(CaseRecord, key) and value:
             query = query.filter(getattr(CaseRecord, key) == value)
     return query.all()
@@ -749,3 +805,127 @@ def create_attachment(
 def get_attachments_for_case(db: Session, case_id: int) -> List[Attachment]:
     """Get all attachments for a case"""
     return db.query(Attachment).filter(Attachment.case_id == case_id).all()
+
+
+# ====================================================================
+# Revocation cache — Redis-backed coordinated cache to prevent
+# thundering herd on token revocation DB queries during bursts.
+# ====================================================================
+
+_revocation_cache = None
+_revocation_cache_lock = threading.Lock()
+
+
+def _get_revocation_cache():
+    global _revocation_cache
+    if _revocation_cache is not None:
+        return _revocation_cache
+    with _revocation_cache_lock:
+        if _revocation_cache is None:
+            if redis is None:
+                return None
+            redis_url = getattr(Config, "REDIS_URL", "redis://localhost:6379/0")
+            _revocation_cache = redis.from_url(redis_url, decode_responses=True)
+    return _revocation_cache
+
+
+def _is_token_revoked_uncached(db: Session, jti: str) -> bool:
+    return db.query(RevokedToken).filter(RevokedToken.jti == jti).first() is not None
+
+
+def is_token_revoked(db: Session, jti: str) -> bool:
+    """Check if token JTI is revoked, using Redis coordinated cache."""
+    cache = _get_revocation_cache()
+    if cache is None:
+        return _is_token_revoked_uncached(db, jti)
+
+    cache_key = f"revoked:{jti}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached == "1"
+
+    lock_key = f"{cache_key}:lock"
+    lock_value = str(time.monotonic_ns())
+
+    if cache.set(lock_key, lock_value, nx=True, ex=10):
+        try:
+            revoked = _is_token_revoked_uncached(db, jti)
+            ttl = 3600 if revoked else 300
+            cache.setex(cache_key, ttl, "1" if revoked else "0")
+            return revoked
+        finally:
+            if cache.get(lock_key) == lock_value:
+                cache.delete(lock_key)
+
+    for _ in range(50):
+        time.sleep(0.02)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached == "1"
+
+    return _is_token_revoked_uncached(db, jti)
+
+
+def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken:
+    """Add a token JTI to the revocation blacklist"""
+    token = RevokedToken(jti=jti, expires_at=expires_at)
+    db.add(token)
+    db.commit()
+    db.refresh(token)
+    return token
+
+
+def aggregate_model_performance(db: Session, task: str = None) -> list:
+    return []
+
+
+
+def cleanup_expired_revoked_tokens(db: Session) -> int:
+    """Remove expired tokens from the blacklist"""
+    now = dt.datetime.now(dt.timezone.utc)
+    deleted = db.query(RevokedToken).filter(RevokedToken.expires_at < now).delete(synchronize_session=False)
+    db.commit()
+    return deleted
+
+
+def submit_similarity_feedback(
+    db: Session,
+    user_id: str,
+    candidate_case_id: int,
+    query_signature: str,
+    relevance: bool,
+) -> SimilarityFeedback:
+    """Persist feedback for a similarity search result"""
+    feedback = SimilarityFeedback(
+        user_id=str(user_id),
+        candidate_case_id=candidate_case_id,
+        query_signature=query_signature,
+        relevance=relevance,
+    )
+    db.add(feedback)
+    db.commit()
+    db.refresh(feedback)
+    return feedback
+
+
+def get_similarity_feedback(
+    db: Session,
+    user_id: Optional[str] = None,
+    query_signature: Optional[str] = None,
+    candidate_case_id: Optional[int] = None,
+    limit: int = 100,
+) -> List[SimilarityFeedback]:
+    """Get similarity feedback rows filtered by user, query, or candidate case"""
+    query = db.query(SimilarityFeedback)
+
+    if user_id is not None:
+        query = query.filter(SimilarityFeedback.user_id == str(user_id))
+    if query_signature is not None:
+        query = query.filter(SimilarityFeedback.query_signature == query_signature)
+    if candidate_case_id is not None:
+        query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
+
+    return query.order_by(SimilarityFeedback.created_at.desc()).limit(limit).all()
+
+
+
