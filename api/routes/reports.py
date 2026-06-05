@@ -11,11 +11,11 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import FileResponse
 from pathlib import Path
-from report_service import _get_reports_base_dir
 
 from api.models import ReportGenerationRequest, ReportGenerationResponse
 from api.auth import get_current_user, CurrentUser
-from celery_app import generate_report_task, TaskStatus
+from celery_app import generate_report_task
+from report_service import get_report_by_id
 import structlog
 from datetime import datetime
 
@@ -184,6 +184,8 @@ def _sync_report_statuses(user_id: int) -> List[Dict[str, Any]]:
 )
 async def generate_report(
     request: ReportGenerationRequest,
+    http_request: Request,
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> ReportGenerationResponse:
     """
@@ -210,19 +212,36 @@ async def generate_report(
     # Queue async task
     task = generate_report_task.delay(
         user_id=current_user.user_id,
-        case_id=request.case_id,
+        case_id=case_id_int,
+        celery_task_id="pending",  # Will be updated after task enqueue
         report_type=request.report_type,
-        format=request.format
+        format=request.format,
+        style=request.style
+    )
+    
+    logger.info("Report record created", report_id=report_id, db_id=db_report.id)
+    
+    # Step 2: Queue async task with report_id parameter
+    task = enqueue_task_from_http_request(
+        generate_report_task,
+        http_request,
+        context_user_id=current_user.user_id,
+        user_id=str(current_user.user_id),
+        case_id=str(case_id_int),
+        report_id=report_id,
+        report_type=request.report_type,
+        format=request.format,
+        privacy_profile=request.privacy_profile,
     )
 
     return ReportGenerationResponse(
-        report_id=str(uuid.uuid4()),
+        report_id=db_report.report_id,
         job_id=task.id,
         case_id=request.case_id,
         status="pending",
         report_type=request.report_type,
         format=request.format,
-        created_at=datetime.utcnow()
+        created_at=db_report.created_at
     )
 
 
@@ -233,6 +252,7 @@ async def generate_report(
 )
 async def get_report_status(
     report_id: str,
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> ReportGenerationResponse:
     """Get status of report generation job"""
@@ -242,15 +262,15 @@ async def get_report_status(
     status_info = TaskStatus.get_task_status(report_id)
 
     return ReportGenerationResponse(
-        report_id=report_id,
+        report_id=report["report_id"],
         job_id=report_id,
         case_id="unknown",
-        status=status_info["status"],
+        status=report["status"],
         report_type="comprehensive",
         format="pdf",
-        download_url=f"/api/v1/reports/{report_id}/download" if status_info["status"] == "completed" else None,
+        download_url=report["download_url"],
         created_at=datetime.utcnow(),
-        completed_at=datetime.utcnow() if status_info["status"] == "completed" else None
+        completed_at=datetime.utcnow() if report["status"] == "completed" else None,
     )
 
 
@@ -260,6 +280,7 @@ async def get_report_status(
 )
 async def download_report(
     report_id: str,
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ):
     """Download the generated report file"""
@@ -284,26 +305,32 @@ async def download_report(
     if not user_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report output not found",
+            detail="Report not found",
         )
 
-    matches = list(user_dir.glob(f"*_{report_id}.pdf"))
-    if not matches:
-        # Also try any pdf matching the report_id suffix without strict pattern.
-        matches = list(user_dir.glob(f"*{report_id}.pdf"))
+    if report["status"] != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail=f"Report is still {report['status']}",
+        )
 
-    if not matches:
+    if not report["file_path"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found",
+            detail="Report file not found on disk"
         )
-
-    file_path = matches[0]
+    
+    logger.info(
+        "Downloading report",
+        report_id=report_id,
+        user_id=current_user.user_id,
+        file_path=str(file_path)
+    )
 
     return FileResponse(
-        path=file_path,
+        path=report["file_path"],
         media_type="application/pdf",
-        filename=file_path.name,
+        filename=Path(report["file_path"]).name,
     )
 
 
@@ -314,6 +341,8 @@ async def download_report(
 async def list_reports(
     limit: int = 10,
     offset: int = 0,
+    status_filter: str | None = None,
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
     """Get list of generated reports for the current user.
@@ -339,3 +368,7 @@ async def list_reports(
         "offset": offset,
         "reports": page,
     }
+
+
+
+
