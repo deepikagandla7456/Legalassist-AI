@@ -11,6 +11,7 @@ import secrets
 import hashlib
 
 from api.config import get_settings
+from database import SessionLocal, get_user_by_email
 
 
 settings = get_settings()
@@ -136,13 +137,25 @@ async def get_current_user(
             user_id = payload.get("sub")
             email = payload.get("email")
             role = payload.get("role", "user")
-            
+
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token payload"
                 )
-            
+
+            # Validate the user exists in the database.
+            db = SessionLocal()
+            try:
+                user = get_user_by_email(db, email) if email else None
+                if not user or str(user.id) != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account not found"
+                    )
+            finally:
+                db.close()
+
             return CurrentUser(user_id, email, role)
         except HTTPException:
             raise
@@ -162,6 +175,20 @@ async def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid API key payload"
                 )
+
+            # Validate the user exists in the database — prevents access via
+            # orphaned tokens (e.g. dev-mode placeholders or tokens whose
+            # backing user account was deleted while the token remained valid).
+            db = SessionLocal()
+            try:
+                user = get_user_by_email(db, email) if email else None
+                if not user or str(user.id) != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account not found"
+                    )
+            finally:
+                db.close()
 
             return CurrentUser(user_id, email, role)
         except HTTPException:
