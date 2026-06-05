@@ -8,10 +8,38 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from database import get_db, UserPreference
 
 router = APIRouter(prefix="/api/v1/deadlines", tags=["deadlines"])
 logger = structlog.get_logger(__name__)
+
+
+def _load_reminder_settings(user_id: str) -> tuple:
+    """Load reminder settings from user preferences. Returns (enabled, days)."""
+    db = None
+    try:
+        db = get_db()
+        pref = db.query(UserPreference).filter(
+            UserPreference.user_id == int(user_id)
+        ).first()
+        if pref:
+            enabled = pref.notify_1_day or pref.notify_3_days or pref.notify_10_days or pref.notify_30_days
+            if pref.notify_1_day:
+                days = 1
+            elif pref.notify_3_days:
+                days = 3
+            elif pref.notify_10_days:
+                days = 10
+            elif pref.notify_30_days:
+                days = 30
+            else:
+                days = 7
+            return (enabled, days)
+        return (True, 7)
+    finally:
+        if db:
+            db.close()
 
 
 @router.get(
@@ -37,8 +65,9 @@ async def get_upcoming_deadlines(
         days=days
     )
     
-    # Mock deadline data
-    now = datetime.utcnow()
+    reminder_enabled, reminder_days = _load_reminder_settings(current_user.user_id)
+
+    now = datetime.now(timezone.utc)
     deadlines = [
         DeadlineResponse(
             deadline_id="dl_001",
@@ -50,8 +79,8 @@ async def get_upcoming_deadlines(
             days_until_due=3,
             priority="critical",
             status="pending",
-            reminder_enabled=True,
-            reminder_days=7,
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
         DeadlineResponse(
@@ -64,8 +93,8 @@ async def get_upcoming_deadlines(
             days_until_due=10,
             priority="high",
             status="pending",
-            reminder_enabled=True,
-            reminder_days=7,
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
         DeadlineResponse(
@@ -78,8 +107,8 @@ async def get_upcoming_deadlines(
             days_until_due=21,
             priority="medium",
             status="pending",
-            reminder_enabled=True,
-            reminder_days=7,
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
     ]
@@ -97,7 +126,7 @@ async def get_upcoming_deadlines(
         medium_count=medium,
         low_count=low,
         deadlines=deadlines,
-        generated_at=datetime.utcnow()
+        generated_at=datetime.now(timezone.utc)
     )
 
 
@@ -118,7 +147,8 @@ async def get_deadline_details(
         user_id=current_user.user_id
     )
     
-    now = datetime.utcnow()
+    reminder_enabled, reminder_days = _load_reminder_settings(current_user.user_id)
+    now = datetime.now(timezone.utc)
     return DeadlineResponse(
         deadline_id=deadline_id,
         user_id=current_user.user_id,
@@ -129,8 +159,8 @@ async def get_deadline_details(
         days_until_due=5,
         priority="high",
         status="pending",
-        reminder_enabled=True,
-        reminder_days=7,
+        reminder_enabled=reminder_enabled,
+        reminder_days=reminder_days,
         created_at=now
     )
 
@@ -157,7 +187,8 @@ async def create_deadline(
         title=title
     )
     
-    now = datetime.utcnow()
+    reminder_enabled, pref_reminder_days = _load_reminder_settings(current_user.user_id)
+    now = datetime.now(timezone.utc)
     days_until = (due_date - now).days
     
     return DeadlineResponse(
@@ -170,8 +201,8 @@ async def create_deadline(
         days_until_due=days_until,
         priority=priority,
         status="pending",
-        reminder_enabled=True,
-        reminder_days=reminder_days,
+        reminder_enabled=reminder_enabled,
+        reminder_days=pref_reminder_days,
         created_at=now
     )
 
@@ -196,8 +227,8 @@ async def update_deadline(
         user_id=current_user.user_id
     )
     
-    # In production, fetch and update from database
-    now = datetime.utcnow()
+    reminder_enabled, pref_reminder_days = _load_reminder_settings(current_user.user_id)
+    now = datetime.now(timezone.utc)
     return DeadlineResponse(
         deadline_id=deadline_id,
         user_id=current_user.user_id,
@@ -208,7 +239,7 @@ async def update_deadline(
         days_until_due=7,
         priority=priority or "medium",
         status="pending",
-        reminder_enabled=True,
-        reminder_days=7,
+        reminder_enabled=reminder_enabled,
+        reminder_days=pref_reminder_days,
         created_at=now
     )
