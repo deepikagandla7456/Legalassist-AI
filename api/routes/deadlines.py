@@ -4,7 +4,9 @@ GET /api/v1/deadlines/upcoming - Get user's upcoming deadlines
 GET /api/v1/deadlines/{deadline_id} - Get deadline details
 POST /api/v1/deadlines - Create new deadline
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
@@ -58,14 +60,19 @@ def _deadline_to_response(d: CaseDeadline) -> DeadlineResponse:
     response_model=UpcomingDeadlinesResponse,
     summary="Get user's upcoming deadlines"
 )
-async def get_upcoming_deadlines(
+async def get_upcoming_deadlines_endpoint(
     days: int = 30,
-    current_user: CurrentUser = Depends(get_current_user)
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db_rls),
 ) -> UpcomingDeadlinesResponse:
     logger.info(
         "Fetching upcoming deadlines",
         user_id=current_user.user_id,
-        days=days
+        days=days,
+        limit=limit,
+        offset=offset,
     )
 
     db = None
@@ -111,7 +118,8 @@ async def get_upcoming_deadlines(
 )
 async def get_deadline_details(
     deadline_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db_rls),
 ) -> DeadlineResponse:
     logger.info(
         "Fetching deadline",
@@ -145,18 +153,21 @@ async def get_deadline_details(
     summary="Create new deadline"
 )
 async def create_deadline(
+    case_id: int,
     title: str,
     due_date: datetime,
     description: str = "",
+    deadline_type: str = "filing",
     priority: str = "medium",
-    case_id: str = None,
+    reminder_enabled: bool = True,
     reminder_days: int = 7,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db_rls)
 ) -> DeadlineResponse:
     logger.info(
         "Creating deadline",
         user_id=current_user.user_id,
-        title=title
+        title=request.title
     )
 
     db = None
@@ -208,11 +219,13 @@ async def create_deadline(
     summary="Update deadline"
 )
 async def update_deadline(
-    deadline_id: str,
+    deadline_id: int,
     title: str = None,
     due_date: datetime = None,
+    deadline_type: str = None,
     priority: str = None,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db_rls)
 ) -> DeadlineResponse:
     logger.info(
         "Updating deadline",
