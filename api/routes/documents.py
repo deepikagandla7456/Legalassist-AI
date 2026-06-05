@@ -6,6 +6,7 @@ GET /api/v1/analyze/{job_id} - Check analysis job status
 import uuid
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from api.models import DocumentAnalysisRequest, DocumentAnalysisSummary, AnalysisJobResponse
 from api.auth import get_current_user, CurrentUser
 from celery_app import analyze_document_task, TaskStatus
@@ -108,9 +109,13 @@ async def get_analysis_result(
     status_info = TaskStatus.get_task_status(job_id)
     
     if status_info["status"] != "completed":
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            detail=f"Job is still {status_info['status']}"
+            content={
+                "job_id": job_id,
+                "status": status_info["status"],
+                "detail": f"Job is still {status_info['status']}",
+            },
         )
     
     result = status_info["info"]
