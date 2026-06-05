@@ -7,7 +7,7 @@ from typing import Any
 
 
 import structlog
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from api.errors import StructuredAPIError
@@ -266,7 +266,14 @@ async def update_user_preferences(
     try:
         channel_enum = NotificationChannel(payload.notification_channel.lower())
     except ValueError:
-        channel_enum = NotificationChannel.BOTH
+        valid_channels = [c.value for c in NotificationChannel]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Invalid notification_channel '{payload.notification_channel}'. "
+                f"Must be one of: {', '.join(valid_channels)}"
+            ),
+        )
 
     pref = create_or_update_user_preference(
         db=db,
