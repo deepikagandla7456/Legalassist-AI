@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from api.models import CostBreakdown, AnalyticsResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 logger = structlog.get_logger(__name__)
@@ -36,15 +36,25 @@ async def get_cost_breakdown(
         period=period
     )
     
+    # Ensure each cost category is mutually exclusive to prevent double counting.
+    # general_llm_api_cost represents general (non-document-related) LLM calls.
+    # doc_proc_cost represents document-related operations (which also use the LLM under the hood).
+    # store_cost represents storage cost.
+    # total_cost is computed as the sum of these non-overlapping components.
+    general_llm_api_cost = 39.50
+    doc_proc_cost = 35.50
+    store_cost = 15.00
+    total_calculated_cost = general_llm_api_cost + doc_proc_cost + store_cost
+
     cost_breakdown = CostBreakdown(
         period=period,
-        total_cost=125.50,
-        llm_api_cost=75.00,
-        document_processing_cost=35.50,
-        storage_cost=15.00,
+        total_cost=total_calculated_cost,
+        llm_api_cost=general_llm_api_cost,
+        document_processing_cost=doc_proc_cost,
+        storage_cost=store_cost,
         api_calls=5432,
         documents_analyzed=87,
-        reports_generated=12
+        reports_generated=12,
     )
     
     return AnalyticsResponse(
@@ -56,7 +66,7 @@ async def get_cost_breakdown(
         failed_analyses=2,
         average_analysis_time_seconds=12.5,
         top_case_types=[("civil", 34), ("contract", 28), ("labor", 15)],
-        generated_at=datetime.utcnow()
+        generated_at=datetime.now(timezone.utc)
     )
 
 

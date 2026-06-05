@@ -15,6 +15,75 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# MODULE-LEVEL HELPERS
+# =============================================================================
+
+def _normalize_text(text: Optional[str]) -> Optional[str]:
+    """Helper to normalize text to lowercase and strip whitespace for query comparisons"""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
+    return text.strip().lower()
+
+
+def _summary_overlap(summary1: Optional[str], summary2: Optional[str]) -> float:
+    """Calculate overlap score between two summaries (0.0 to 1.0) using word Jaccard similarity"""
+    if not summary1 or not summary2:
+        return 0.0
+    
+    words1 = set(re.findall(r'\w+', summary1.lower()))
+    words2 = set(re.findall(r'\w+', summary2.lower()))
+    
+    if not words1 or not words2:
+        return 0.0
+        
+    stop_words = {
+        'the', 'a', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+        'an', 'is', 'are', 'was', 'were', 'be', 'been', 'this', 'that', 'these', 'those',
+        'it', 'its', 'he', 'she', 'they', 'we', 'i', 'you'
+    }
+    
+    words1 = words1 - stop_words
+    words2 = words2 - stop_words
+    
+    if not words1 or not words2:
+        return 0.0
+        
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    return len(intersection) / len(union)
+
+
+def _parse_cost_value(cost_str: Optional[str]) -> Optional[float]:
+    """Parse numeric cost value from a string (e.g., '₹12,000 - ₹18,000' or '15000')"""
+    if not cost_str:
+        return None
+    
+    cleaned = cost_str.replace("₹", "").replace(",", "").strip()
+    numbers = re.findall(r'\d+(?:\.\d+)?', cleaned)
+    if not numbers:
+        return None
+        
+    if len(numbers) >= 2:
+        return (float(numbers[0]) + float(numbers[1])) / 2.0
+    return float(numbers[0])
+
+
+def _confidence_from_samples(sample_count: int) -> str:
+    """Determine confidence level ('high', 'medium', 'low', 'very_low') based on sample size"""
+    if sample_count >= 50:
+        return "high"
+    elif sample_count >= 20:
+        return "medium"
+    elif sample_count >= 10:
+        return "low"
+    else:
+        return "very_low"
+
+
 class PandasAnalyticsProcessor:
     """
     Advanced analytics engine utilizing Pandas for complex data transformations.
