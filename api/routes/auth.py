@@ -41,16 +41,32 @@ async def get_token(
     Returns JWT token valid for 24 hours
     """
     
-    # In production, validate against database
-    logger.info("Token request", username=request.username)
+    logger.info("Token request", username=username)
     
-    token = create_access_token({"sub": "user123", "email": request.username, "role": "user"})
-    
-    return TokenResponse(
-        access_token=token,
-        token_type="bearer",
-        expires_in=24 * 3600  # 24 hours in seconds
-    )
+    db = SessionLocal()
+    try:
+        user = get_user_by_email(db, username)
+        if not user or not user.password_hash:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        if not verify_password(password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        token = create_access_token({"sub": str(user.id), "email": user.email})
+        
+        return TokenResponse(
+            access_token=token,
+            token_type="bearer",
+            expires_in=24 * 3600  # 24 hours in seconds
+        )
+    finally:
+        db.close()
 
 
 @router.post(
