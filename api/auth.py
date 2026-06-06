@@ -86,24 +86,8 @@ def verify_token(token: str) -> Dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
+from api.models import APIKey
 
-    # Check token revocation (JTI blacklist) using a structured context
-    # manager so the DB session is guaranteed to close on all code paths.
-    jti = payload.get("jti")
-    if jti:
-        with SessionLocal() as db:
-            if is_token_revoked(db, jti):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token has been revoked"
-                )
-
-    return payload
-
-
-# ============================================================================
-# API Key Management
-# ============================================================================
 
 def generate_api_key() -> str:
     """Generate a new API key"""
