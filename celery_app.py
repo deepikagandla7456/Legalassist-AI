@@ -19,7 +19,7 @@ Date: 2026-05-12
 import os
 import uuid
 import structlog
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from celery import Celery, Task
@@ -383,7 +383,7 @@ def generate_report_task(
             "file_name": generated.file_name,
             "mime_type": generated.mime_type,
             "file_size_bytes": generated.file_size_bytes,
-            "generated_at": datetime.utcnow().isoformat()
+            "generated_at": datetime.now(timezone.utc).isoformat()
         }
 
         logger.info(
