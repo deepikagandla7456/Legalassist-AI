@@ -6,8 +6,9 @@ GET /api/v1/auth/me - Get current user
 """
 from fastapi import APIRouter, HTTPException, status, Depends
 from datetime import datetime, timedelta
-from api.auth import create_access_token, generate_api_key, hash_api_key, CurrentUser, get_current_user
+from api.auth import create_access_token, generate_api_key, hash_api_key, CurrentUser, get_current_user, revoke_jwt_token
 from api.models import TokenResponse, APIKeyCreate, APIKeyResponse
+from fastapi import Request
 import structlog
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -143,3 +144,29 @@ async def get_current_user_info(
         "role": current_user.role,
         "subscription_tier": "pro"
     }
+
+
+@router.post(
+    "/logout",
+    summary="Logout and revoke current JWT token"
+)
+async def logout(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Revoke the current JWT token.
+
+    Requires the user to be authenticated. Extracts the token from the
+    Authorization header, validates that its subject matches the requesting
+    user, and blacklists it so it can no longer be used.
+    """
+    auth = request.headers.get("Authorization") or request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1].strip()
+
+    if not token:
+        return {"status": "ok", "revoked": False, "detail": "No token to revoke"}
+
+    revoke_jwt_token(token, int(current_user.user_id))
+    return {"status": "ok", "revoked": True}
