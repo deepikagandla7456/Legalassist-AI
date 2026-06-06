@@ -224,25 +224,11 @@ async def download_report(
         file_path=str(file_path)
     )
 
-    # Audit logging is a non-critical observability concern.
-    # A transient failure (DB unavailable, pending migration, etc.) must
-    # never prevent the user from receiving a file that already exists on
-    # disk.  We catch all exceptions, record full diagnostic context so
-    # on-call engineers can investigate, then continue with delivery.
-    try:
-        _record_download_audit(
-            user_id=current_user.user_id,
-            report_id=report_id,
-            file_name=file_path.name,
-            file_size_bytes=file_path.stat().st_size,
-        )
-    except Exception as audit_exc:  # noqa: BLE001
-        logger.warning(
-            "audit_log_failed_for_report_download",
-            report_id=report_id,
-            user_id=current_user.user_id,
-            error=str(audit_exc),
-            exc_info=True,
+    file_path = matches[0]
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report file not found",
         )
 
     return FileResponse(
