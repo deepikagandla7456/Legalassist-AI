@@ -127,7 +127,7 @@ async def search_cases(
                     created_at = created_at.replace(tzinfo=timezone.utc)
                 recency_days = (datetime.now(timezone.utc) - created_at).days if created_at else 0
                 recency_boost = max(0.0, 0.05 - recency_days * 0.0002)  # up to +0.05
-            except Exception:
+            except (TypeError, ValueError, AttributeError):
                 recency_boost = 0.0
             feedback_boost = CaseSimilarityCalculator.get_feedback_adjustment(
                 db,
