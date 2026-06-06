@@ -10,7 +10,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer, APIKeyHeader
 import secrets
 import hashlib
-from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 
 from api.config import get_settings
@@ -46,8 +45,19 @@ security = HTTPBearer(auto_error=False)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-# Configure Bcrypt password hashing with cost factor of 14 for security
+# Password hashing (canonical source for all password operations)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=14)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against a bcrypt hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    """Generate a bcrypt hash for a password with cost factor 14."""
+    return pwd_context.hash(password)
+
 
 # PBKDF2 iterations for API key hashing (OWASP 2023 minimum for SHA-256)
 API_KEY_HASH_ITERATIONS = 600000
@@ -86,24 +96,8 @@ def verify_token(token: str) -> Dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
+from api.models import APIKey
 
-    # Check token revocation (JTI blacklist) using a structured context
-    # manager so the DB session is guaranteed to close on all code paths.
-    jti = payload.get("jti")
-    if jti:
-        with SessionLocal() as db:
-            if is_token_revoked(db, jti):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token has been revoked"
-                )
-
-    return payload
-
-
-# ============================================================================
-# API Key Management
-# ============================================================================
 
 def generate_api_key() -> str:
     """Generate a new API key"""
