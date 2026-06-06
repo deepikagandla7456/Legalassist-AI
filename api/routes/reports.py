@@ -25,7 +25,7 @@ from api.auth import get_current_user, CurrentUser
 from celery_app import generate_report_task
 from report_service import get_report_by_id
 import structlog
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 logger = structlog.get_logger(__name__)
@@ -151,7 +151,7 @@ async def generate_report(
         status="pending",
         report_type=request.report_type,
         format=request.format,
-        created_at=db_report.created_at
+        created_at=datetime.now(timezone.utc)
     )
 
 
@@ -181,9 +181,9 @@ async def get_report_status(
         status=report["status"],
         report_type="comprehensive",
         format="pdf",
-        download_url=report["download_url"],
-        created_at=datetime.utcnow(),
-        completed_at=datetime.utcnow() if report["status"] == "completed" else None,
+        download_url=f"/api/v1/reports/{report_id}/download" if status_info["status"] == "completed" else None,
+        created_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc) if status_info["status"] == "completed" else None
     )
 
 

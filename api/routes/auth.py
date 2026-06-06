@@ -205,31 +205,27 @@ async def get_current_user_info(
     }
 
 
-
-
 @router.post(
     "/logout",
-    summary="Logout and revoke current JWT token",
-    dependencies=[Depends(RateLimit(use_auth_defaults=True))]
+    summary="Logout and revoke current JWT token"
 )
-async def logout(request: Request) -> dict:
-    """Revoke the JWT presented in Authorization header (if any)."""
+async def logout(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Revoke the current JWT token.
+
+    Requires the user to be authenticated. Extracts the token from the
+    Authorization header, validates that its subject matches the requesting
+    user, and blacklists it so it can no longer be used.
+    """
     auth = request.headers.get("Authorization") or request.headers.get("authorization")
     token = None
     if auth and auth.lower().startswith("bearer "):
         token = auth.split(None, 1)[1].strip()
 
     if not token:
-        # Nothing to revoke, but return success to avoid token probing
-        return {"status": "ok", "revoked": False}
+        return {"status": "ok", "revoked": False, "detail": "No token to revoke"}
 
-    try:
-        success = api_revoke_jwt(token)
-        if success:
-            logger.info("api_logout_revoked")
-        else:
-            logger.info("api_logout_no_revoke_needed")
-        return {"status": "ok", "revoked": bool(success)}
-    except Exception as e:
-        logger.error("api_logout_failed", error=str(e))
-        return {"status": "error", "revoked": False}
+    revoke_jwt_token(token, int(current_user.user_id))
+    return {"status": "ok", "revoked": True}

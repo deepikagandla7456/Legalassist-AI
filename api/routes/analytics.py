@@ -6,15 +6,14 @@ GET /api/v1/analytics/usage - User API usage metrics
 GET /api/v1/analytics/dashboard - Dashboard summary for the Streamlit frontend
 """
 from collections import Counter
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from api.models import CostBreakdown, AnalyticsResponse, DashboardSummaryResponse
 from api.auth import get_current_user, CurrentUser
-from database import ModelPerformance, CaseDocument, Attachment, Case, SessionLocal
-from datetime import datetime, timezone
+from database import CaseDocument, Case, SessionLocal
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import func
 import structlog
 
@@ -235,22 +234,46 @@ async def get_usage_metrics(
     db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
-    """Get API usage metrics for last N days based on actual document activity."""
+    """Get API usage metrics for last N days based on document activity.
+
+    All activity-derived fields use consistent types:
+    - ``peak_day`` is ``str`` (ISO date) when data exists, ``None`` otherwise.
+    - ``peak_hour`` is ``int`` (0-23) when data exists, ``None`` otherwise.
+    """
     uid = int(current_user.user_id)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     db = SessionLocal()
     try:
-        doc_count = _get_user_doc_count(db, uid)
+        upload_dates = db.query(CaseDocument.uploaded_at).select_from(Case).join(
+            CaseDocument, Case.id == CaseDocument.case_id
+        ).filter(
+            Case.user_id == uid,
+            CaseDocument.uploaded_at >= cutoff,
+        ).all()
+
+        total_requests = len(upload_dates)
+
+        if total_requests > 0:
+            day_counts = Counter(d.uploaded_at.date() for d in upload_dates)
+            hour_counts = Counter(d.uploaded_at.hour for d in upload_dates)
+            peak_day_entry = day_counts.most_common(1)[0]
+            peak_hour_entry = hour_counts.most_common(1)[0]
+            peak_day = str(peak_day_entry[0])
+            peak_hour = peak_hour_entry[0]
+        else:
+            peak_day = None
+            peak_hour = None
 
         return {
             "user_id": str(uid),
             "period_days": days,
-            "total_requests": doc_count,
-            "daily_average": round(doc_count / max(days, 1), 1),
-            "peak_day": doc_count,
-            "peak_hour": 0,
+            "total_requests": total_requests,
+            "daily_average": round(total_requests / max(days, 1), 1),
+            "peak_day": peak_day,
+            "peak_hour": peak_hour,
             "endpoints": {
-                "POST /analyze/document": doc_count,
+                "POST /analyze/document": total_requests,
             },
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }

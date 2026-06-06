@@ -10,10 +10,10 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer, APIKeyHeader
 import secrets
 import hashlib
-from passlib.context import CryptContext
+import uuid
 
 from api.config import get_settings
-from database import SessionLocal, get_user_by_email
+from database import SessionLocal, revoke_token
 
 # Import canonical JWT utilities from shared module
 from api.jwt_auth import (
@@ -62,14 +62,76 @@ def get_password_hash(password: str) -> str:
 # PBKDF2 iterations for API key hashing (OWASP 2023 minimum for SHA-256)
 API_KEY_HASH_ITERATIONS = 600000
 
-# Auth rate limiting thresholds — explicitly bridged from APISettings so any
-# direct import of these constants (e.g. from api.auth import AUTH_RATE_LIMIT_REQUESTS) resolves.
-AUTH_RATE_LIMIT_REQUESTS = settings.AUTH_RATE_LIMIT_REQUESTS
-AUTH_RATE_LIMIT_WINDOW = settings.AUTH_RATE_LIMIT_WINDOW
+def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create JWT access token"""
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(hours=settings.JWT_EXPIRATION_HOURS)
+    
+    to_encode.update({"exp": expire, "jti": str(uuid.uuid4())})
+    
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM
+    )
+    return encoded_jwt
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plain password against a bcrypt hash."""
     return pwd_context.verify(plain_password, hashed_password)
+
+def revoke_jwt_token(token: str, user_id: int) -> bool:
+    """Revoke a JWT token, validating that it belongs to the given user.
+
+    Args:
+        token: The JWT string to revoke.
+        user_id: The ID of the user requesting revocation (ownership check).
+
+    Returns:
+        True if the token was revoked, False if it was already revoked
+        or had no revocable claims.
+
+    Raises:
+        HTTPException(403) if the token's subject does not match user_id.
+        HTTPException(401) if the token is malformed.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    token_sub = payload.get("sub")
+    if token_sub is None or int(token_sub) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not belong to the authenticated user"
+        )
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return False
+
+    db = SessionLocal()
+    try:
+        expires_at = datetime.utcfromtimestamp(exp)
+        revoke_token(db, jti, expires_at)
+        return True
+    finally:
+        db.close()
+
 
 def verify_token(token: str) -> Dict:
     """Verify JWT token and check revocation status.
