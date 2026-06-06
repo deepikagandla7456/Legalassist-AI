@@ -5,8 +5,6 @@ GET /api/v1/deadlines/{deadline_id} - Get deadline details
 POST /api/v1/deadlines - Create new deadline
 """
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import text
 from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
@@ -49,12 +47,9 @@ def _load_reminder_settings(user_id: str) -> tuple:
     response_model=UpcomingDeadlinesResponse,
     summary="Get user's upcoming deadlines"
 )
-async def get_upcoming_deadlines_endpoint(
-    days: int = 30,
-    limit: int = Query(50, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db_rls),
+async def get_upcoming_deadlines(
+    days: int = Query(30, ge=1, le=365, description="Look-ahead window in days (max 365)"),
+    current_user: CurrentUser = Depends(get_current_user)
 ) -> UpcomingDeadlinesResponse:
     """Get upcoming deadlines for user"""
 
@@ -206,9 +201,15 @@ async def create_deadline(
     reminder_enabled: bool = True,
     reminder_days: int = 7,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db_rls)
+    db: Session = Depends(get_db),
 ) -> DeadlineResponse:
-    """Create a new deadline"""
+    """Create a new deadline and persist it to the database."""
+
+    if not case_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="case_id is required",
+        )
 
     logger.info(
         "Creating deadline",
