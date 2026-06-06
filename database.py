@@ -774,6 +774,25 @@ class CasePresence(Base):
         return f"<CasePresence(case_id={self.case_id}, user_id={self.user_id}, status={self.status})>"
 
 
+class APIKey(Base):
+    """Stored API key for programmatic access"""
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    key_hash = Column(String(255), nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    user = relationship("User", backref="api_keys")
+
+    def __repr__(self):
+        return f"<APIKey(id={self.id}, name='{self.name}', active={self.is_active})>"
+
+
 # Database initialization
 def init_db():
     """Create all tables"""

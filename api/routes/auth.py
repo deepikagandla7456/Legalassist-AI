@@ -6,8 +6,11 @@ GET /api/v1/auth/me - Get current user
 """
 from fastapi import APIRouter, HTTPException, status, Depends
 from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
 from api.auth import create_access_token, generate_api_key, hash_api_key, CurrentUser, get_current_user
 from api.models import TokenResponse, APIKeyCreate, APIKeyResponse
+from api.rate_limits import check_api_key_creation_limit
+from database import get_db, APIKey
 import structlog
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -51,7 +54,9 @@ async def get_token(
 )
 async def create_api_key(
     request: APIKeyCreate,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    _: None = Depends(check_api_key_creation_limit),
+    db: Session = Depends(get_db),
 ) -> APIKeyResponse:
     """
     Create new API key for programmatic access
@@ -75,12 +80,22 @@ async def create_api_key(
     if request.expires_in_days:
         expires_at = datetime.utcnow() + timedelta(days=request.expires_in_days)
     
-    return APIKeyResponse(
-        id="key_123",
+    record = APIKey(
+        user_id=int(current_user.user_id),
         name=request.name,
-        key=key,  # Only shown now
-        created_at=datetime.utcnow(),
-        expires_at=expires_at
+        key_hash=key_hash,
+        expires_at=expires_at,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    
+    return APIKeyResponse(
+        id=str(record.id),
+        name=record.name,
+        key=key,
+        created_at=record.created_at,
+        expires_at=record.expires_at
     )
 
 
@@ -89,22 +104,29 @@ async def create_api_key(
     summary="List API keys"
 )
 async def list_api_keys(
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
     """List all API keys for current user"""
     
     logger.info("Listing API keys", user_id=current_user.user_id)
     
+    records = db.query(APIKey).filter(
+        APIKey.user_id == int(current_user.user_id),
+        APIKey.is_active == True,
+    ).all()
+    
     return {
         "user_id": current_user.user_id,
         "keys": [
             {
-                "id": "key_123",
-                "name": "Production API Key",
-                "created_at": datetime.utcnow().isoformat(),
-                "expires_at": None,
-                "last_used": None
+                "id": str(r.id),
+                "name": r.name,
+                "created_at": r.created_at.isoformat(),
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "last_used": r.last_used_at.isoformat() if r.last_used_at else None,
             }
+            for r in records
         ]
     }
 
@@ -115,7 +137,8 @@ async def list_api_keys(
 )
 async def delete_api_key(
     key_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Delete an API key"""
     
@@ -124,6 +147,21 @@ async def delete_api_key(
         user_id=current_user.user_id,
         key_id=key_id
     )
+    
+    record = db.query(APIKey).filter(
+        APIKey.id == int(key_id),
+        APIKey.user_id == int(current_user.user_id),
+        APIKey.is_active == True,
+    ).first()
+    
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found or already deleted"
+        )
+    
+    record.is_active = False
+    db.commit()
     
     return {"status": "deleted", "key_id": key_id}
 
