@@ -2,9 +2,16 @@
 Analytics Endpoints
 GET /api/v1/analytics/costs - User cost breakdown
 GET /api/v1/analytics/overview - User analytics overview
+GET /api/v1/analytics/usage - User API usage metrics
+GET /api/v1/analytics/dashboard - Dashboard summary for the Streamlit frontend
 """
+from collections import Counter
+
 from fastapi import APIRouter, Depends
-from api.models import CostBreakdown, AnalyticsResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from api.models import CostBreakdown, AnalyticsResponse, DashboardSummaryResponse
 from api.auth import get_current_user, CurrentUser
 from database import ModelPerformance, CaseDocument, Attachment, Case, SessionLocal
 from datetime import datetime, timezone
@@ -88,6 +95,7 @@ def _get_user_storage_bytes(db, uid: int) -> int:
 )
 async def get_cost_breakdown(
     period: str = "monthly",
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> AnalyticsResponse:
     """
@@ -155,6 +163,7 @@ async def get_cost_breakdown(
     summary="Get analytics overview"
 )
 async def get_analytics_overview(
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
     """Get comprehensive analytics overview using operation-specific cost metrics."""
@@ -203,11 +212,27 @@ async def get_analytics_overview(
 
 
 @router.get(
+    "/dashboard",
+    response_model=DashboardSummaryResponse,
+    summary="Get dashboard summary"
+)
+def get_dashboard_summary(
+    db: Session = Depends(get_db_rls),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> DashboardSummaryResponse:
+    """Get the dashboard summary used by the Streamlit home analytics view."""
+
+    summary = AnalyticsAggregator.get_dashboard_summary(db)
+    return DashboardSummaryResponse(**summary)
+
+
+@router.get(
     "/usage",
     summary="Get API usage metrics"
 )
 async def get_usage_metrics(
     days: int = 30,
+    db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
     """Get API usage metrics for last N days based on actual document activity."""
