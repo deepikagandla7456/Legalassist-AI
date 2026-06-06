@@ -6,13 +6,15 @@ GET /api/v1/analytics/usage - User API usage metrics
 GET /api/v1/analytics/dashboard - Dashboard summary for the Streamlit frontend
 """
 from collections import Counter
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from api.models import CostBreakdown, AnalyticsResponse, DashboardSummaryResponse
 from api.auth import get_current_user, CurrentUser
+from database import CaseDocument, Case, SessionLocal
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import func
 import structlog
 from datetime import datetime, timezone
 from database import get_db, Case, CaseDeadline
@@ -20,6 +22,72 @@ from analytics_engine import AnalyticsAggregator
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 logger = structlog.get_logger(__name__)
+
+# Known task categories for operation-specific cost calculations
+_LLM_TASKS = frozenset({"summary", "remedy_extraction", "appeal_estimation", "report_generation", "analysis"})
+_DOC_TASKS = frozenset({"document_classification", "document_extraction", "ocr", "text_extraction"})
+
+
+def _get_per_task_average_costs(db) -> tuple[float, float]:
+    """Query ModelPerformance for per-task average costs and return (llm_avg_cents, doc_avg_cents).
+
+    Averages are weighted by samples to avoid skew from low-volume tasks.
+    Falls back to the overall weighted average if a category has no matching tasks.
+    """
+    rows = db.query(
+        ModelPerformance.task,
+        func.sum(ModelPerformance.average_cost * ModelPerformance.samples).label("total_weighted_cost"),
+        func.sum(ModelPerformance.samples).label("total_samples"),
+    ).filter(
+        ModelPerformance.samples > 0,
+        ModelPerformance.average_cost.isnot(None),
+    ).group_by(ModelPerformance.task).all()
+
+    if not rows:
+        return 0.0, 0.0
+
+    llm_weighted = doc_weighted = 0.0
+    llm_samples = doc_samples = 0
+    fallback_weighted = fallback_samples = 0.0
+
+    for row in rows:
+        w = row.total_weighted_cost or 0
+        s = row.total_samples or 0
+        if row.task in _LLM_TASKS:
+            llm_weighted += w
+            llm_samples += s
+        elif row.task in _DOC_TASKS:
+            doc_weighted += w
+            doc_samples += s
+        else:
+            fallback_weighted += w
+            fallback_samples += s
+
+    # If a category has no matching tasks, use fallback (all tasks) weighted average
+    if llm_samples == 0 and fallback_samples > 0:
+        llm_weighted = fallback_weighted
+        llm_samples = fallback_samples
+    if doc_samples == 0 and fallback_samples > 0:
+        doc_weighted = fallback_weighted
+        doc_samples = fallback_samples
+
+    llm_avg_cents = llm_weighted / llm_samples if llm_samples > 0 else 0.0
+    doc_avg_cents = doc_weighted / doc_samples if doc_samples > 0 else 0.0
+    return llm_avg_cents, doc_avg_cents
+
+
+def _get_user_doc_count(db, uid: int) -> int:
+    """Count documents belonging to the given user through the Case relationship."""
+    return db.query(func.count(CaseDocument.id)).select_from(Case).join(
+        CaseDocument, Case.id == CaseDocument.case_id
+    ).filter(Case.user_id == uid).scalar() or 0
+
+
+def _get_user_storage_bytes(db, uid: int) -> int:
+    """Sum of attachment sizes in bytes for the given user."""
+    return db.query(func.coalesce(func.sum(Attachment.size_bytes), 0)).filter(
+        Attachment.user_id == uid
+    ).scalar() or 0
 
 
 @router.get(
@@ -37,8 +105,10 @@ async def get_cost_breakdown(
 
     - **period**: monthly or all_time
 
-    Returns breakdown of API costs by service
+    Returns breakdown of API costs by service, using per-task average costs
+    from the ModelPerformance table rather than a single global average.
     """
+    uid = int(current_user.user_id)
 
     logger.info(
         "Fetching cost breakdown",
@@ -167,7 +237,7 @@ async def get_usage_metrics(
     db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> dict:
-    """Get API usage metrics for last N days"""
+    """Get API usage metrics for last N days based on document activity.
 
     logger.info(
         "Fetching usage metrics",
