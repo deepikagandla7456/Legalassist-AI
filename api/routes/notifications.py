@@ -7,7 +7,7 @@ from typing import Any
 
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
 
 from api.errors import StructuredAPIError
@@ -164,7 +164,12 @@ def _update_delivery_status(db: Session, message_id: str | None, status_value: N
 
 @router.post("/twilio")
 async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
-    raw_body = (await request.body()).decode("utf-8")
+    raw_bytes = await request.body()
+    try:
+        raw_body = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("twilio_webhook_invalid_utf8", body_length=len(raw_bytes))
+        raw_body = raw_bytes.decode("utf-8", errors="replace")
     params = _parse_twilio_webhook_payload(raw_body)
 
     if not _verify_twilio_signature(request, params):
@@ -188,7 +193,12 @@ async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db
 
 @router.post("/sendgrid")
 async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
-    raw_body = (await request.body()).decode("utf-8")
+    raw_bytes = await request.body()
+    try:
+        raw_body = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("sendgrid_webhook_invalid_utf8", body_length=len(raw_bytes))
+        raw_body = raw_bytes.decode("utf-8", errors="replace")
 
     if not _verify_sendgrid_signature(request, raw_body):
         raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_SIGNATURE_INVALID", message="Invalid SendGrid signature")
@@ -266,14 +276,7 @@ async def update_user_preferences(
     try:
         channel_enum = NotificationChannel(payload.notification_channel.lower())
     except ValueError:
-        valid_channels = [c.value for c in NotificationChannel]
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Invalid notification_channel '{payload.notification_channel}'. "
-                f"Must be one of: {', '.join(valid_channels)}"
-            ),
-        )
+        channel_enum = NotificationChannel.BOTH
 
     pref = create_or_update_user_preference(
         db=db,
