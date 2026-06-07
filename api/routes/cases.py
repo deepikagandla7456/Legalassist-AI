@@ -78,23 +78,33 @@ async def search_cases(
     try:
         db = get_db()
 
+        # If the caller supplies their own case number, look it up with
+        # ownership validation and use it as the reference for similarity.
+        if request.case_number:
+            user_case = db.query(Case).filter(
+                Case.case_number == request.case_number,
+                Case.user_id == int(current_user.user_id),
+            ).first()
+            if user_case:
+                # Build a CaseRecord-compatible snapshot from the user's case
+                # so we can score it against the CaseRecord table.
+                reference_case = CaseRecord(
+                    case_type=user_case.case_type,
+                    jurisdiction=user_case.jurisdiction,
+                    court_name=None,
+                    judge_name=None,
+                    plaintiff_type=None,
+                    defendant_type=None,
+                    case_value=None,
+                    outcome="unknown",
+                    judgment_summary=user_case.title or "",
+                    created_at=user_case.created_at,
+                )
+
         query_signature = request.query_signature or _build_query_signature(request)
 
-        # Restrict candidates to case types and jurisdictions the user owns
-        user_scope = (
-            db.query(Case.case_type, Case.jurisdiction)
-            .filter(Case.user_id == int(current_user.user_id))
-            .distinct()
-            .all()
-        )
+        # Build candidate query from filters (cheap DB-side filtering)
         query = db.query(CaseRecord)
-        if user_scope:
-            query = query.filter(
-                CaseRecord.case_type.in_([row.case_type for row in user_scope]),
-                CaseRecord.jurisdiction.in_([row.jurisdiction for row in user_scope]),
-            )
-
-        # Apply explicit request filters on top of ownership scope
         if request.case_type and request.case_type != "general":
             query = query.filter(CaseRecord.case_type == request.case_type)
         if request.jurisdiction:
