@@ -124,10 +124,12 @@ RATE_LIMIT_RULES: list[tuple[str, str, str, RateLimitRule]] = [
     ("GET", "/api/v1/analytics/", "prefix", RateLimitRule(20, 60)),
 ]
 
-WHITELIST = {
-    "127.0.0.1",
-    "::1",
-}
+WHITELIST: frozenset[str] = frozenset()
+# Localhost addresses are intentionally excluded from the default whitelist.
+# Blanket loopback exemptions disable rate limiting when proxy configuration
+# is incorrect or absent, defeating a core security control.  If loopback
+# traffic must be exempt, add the address explicitly via the
+# RATE_LIMIT_WHITELIST environment variable (not yet wired; extend as needed).
 
 # Trusted reverse-proxy IPs whose X-Forwarded-For header is honoured.
 # Only real IP addresses belong here — service name strings cannot match
@@ -161,8 +163,11 @@ def _load_trusted_proxies() -> frozenset[str]:
                 entry=candidate,
                 reason="Only IP addresses are accepted as trusted proxies",
             )
-    # Always trust loopback addresses
-    trusted.update({"127.0.0.1", "::1"})
+    # Loopback addresses are NOT automatically trusted.
+    # Misconfigured proxies could expose the loopback address as the apparent
+    # client IP; trusting loopback unconditionally would bypass rate limiting
+    # for any request that appears to originate from localhost.
+    # Add loopback explicitly to RATE_LIMIT_TRUSTED_PROXIES when required.
     return frozenset(trusted)
 
 
