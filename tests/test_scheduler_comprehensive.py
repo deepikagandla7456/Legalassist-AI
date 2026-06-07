@@ -32,93 +32,14 @@ from scheduler import (
     get_scheduler,
 )
 
+from db.session import init_db
+
 @pytest.fixture(scope="function")
 def test_db():
-    """Create an in-memory test database"""
+    """Create an in-memory test database with migrated tables"""
     engine = create_engine("sqlite:///:memory:")
-    with engine.begin() as connection:
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE users (
-                id INTEGER PRIMARY KEY,
-                email VARCHAR(255) NOT NULL
-            )
-            """
-        )
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE cases (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                case_number VARCHAR(255) NOT NULL,
-                case_type VARCHAR(255) NOT NULL,
-                jurisdiction VARCHAR(255) NOT NULL,
-                status VARCHAR(50) NOT NULL,
-                title VARCHAR(255),
-                version INTEGER NOT NULL DEFAULT 1,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE case_deadlines (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                case_id INTEGER NOT NULL,
-                case_title VARCHAR(255) NOT NULL,
-                deadline_date DATETIME NOT NULL,
-                deadline_type VARCHAR(255) NOT NULL,
-                description TEXT,
-                created_at DATETIME,
-                updated_at DATETIME,
-                is_completed BOOLEAN DEFAULT 0 NOT NULL
-            )
-            """
-        )
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE user_preferences (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL UNIQUE,
-                phone_number VARCHAR(255),
-                email VARCHAR(255) NOT NULL,
-                notification_channel VARCHAR(50) DEFAULT 'both',
-                timezone VARCHAR(255) DEFAULT 'UTC',
-                notify_30_days BOOLEAN DEFAULT 1,
-                notify_10_days BOOLEAN DEFAULT 1,
-                notify_3_days BOOLEAN DEFAULT 1,
-                notify_1_day BOOLEAN DEFAULT 1,
-                holiday_aware_reminders BOOLEAN DEFAULT 0,
-                holiday_country VARCHAR(255),
-                holiday_region VARCHAR(255),
-                holiday_calendar_json TEXT,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.exec_driver_sql(
-            """
-            CREATE TABLE notification_logs (
-                id INTEGER PRIMARY KEY,
-                deadline_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                channel VARCHAR(50) NOT NULL,
-                status VARCHAR(50),
-                recipient VARCHAR(255) NOT NULL,
-                days_before INTEGER NOT NULL,
-                message_id VARCHAR(255),
-                error_message TEXT,
-                message_preview TEXT,
-                sent_at DATETIME,
-                delivered_at DATETIME,
-                failed_at DATETIME,
-                created_at DATETIME
-            )
-            """
-        )
+    with patch("db.session.engine", engine), patch("db.session._is_sqlite", True):
+        init_db()
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = TestingSessionLocal()
     yield db

@@ -8,7 +8,7 @@ import hashlib
 import secrets
 import time
 import re
-from routes import PAGE_LOGIN
+from config import PAGE_LOGIN
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Any
@@ -166,6 +166,11 @@ OTP_REQUEST_RATE_LIMIT_MAX = int(os.getenv("OTP_REQUEST_RATE_LIMIT_MAX", str(Con
 OTP_REQUEST_RATE_LIMIT_HOURS = int(os.getenv("OTP_REQUEST_RATE_LIMIT_HOURS", str(Config.OTP_REQUEST_RATE_LIMIT_HOURS)))
 
 
+def _normalize_email(email: str) -> str:
+    """Normalize email to canonical form: lowercased, preserving delimiters."""
+    return email.strip().lower()
+
+
 def _hash_otp(otp: str) -> str:
     """Hash OTP code before storing"""
     return hashlib.sha256(otp.encode()).hexdigest()
@@ -282,6 +287,9 @@ def request_otp(email: str, requester_ip: Optional[str] = None) -> Tuple[bool, s
     via rate-limit or delivery-failure side channels. Actual outcomes are logged
     internally for observability.
     """
+    # Normalize email to canonical form before any rate limit / storage operation
+    email = _normalize_email(email)
+
     # Validate email format
     if not email or not EMAIL_REGEX.match(email):
         return False, "Invalid email address"
@@ -343,6 +351,7 @@ def verify_otp_and_create_token(email: str, otp: str) -> Tuple[bool, str, Option
       cryptographic work so an attacker cannot infer account state from
       response latency (timing side-channel).
     """
+    email = _normalize_email(email)
     db = SessionLocal()
     try:
         # Get pending OTP
@@ -351,10 +360,16 @@ def verify_otp_and_create_token(email: str, otp: str) -> Tuple[bool, str, Option
         GENERIC_OTP_FAILURE = "Invalid or expired OTP. Please request a new one."
 
         if not otp_record:
-            return False, GENERIC_OTP_FAILURE, None
+            # Normalize timing to prevent OTP existence enumeration.
+            # Always run the hash verification even when no record exists.
+            _verify_otp_hash(otp, _hash_otp("000000"))
+            return False, "OTP expired or not found. Please request a new one.", None
 
         # Check if OTP is locked due to too many failed attempts
         if otp_record.is_locked():
+            # Normalize timing to keep execution path consistent.
+            _verify_otp_hash(otp, otp_record.otp_hash)
+            # Ensure locked_until is timezone-aware
             locked_until = otp_record.locked_until
             if locked_until and locked_until.tzinfo is None:
                 locked_until = locked_until.astimezone(timezone.utc)

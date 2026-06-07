@@ -13,14 +13,15 @@ import structlog
 
 from api.config import get_settings
 from api.middleware import (
+    request_size_limit_middleware,
     rate_limit_middleware,
     add_correlation_id_middleware,
     error_handling_middleware,
     logging_middleware,
     request_size_limit_middleware,
     security_headers_middleware,
+    idempotency_middleware,
 )
-from api.idempotency_middleware import idempotency_middleware
 from observability.integration import initialize_observability_for_environment
 from observability.instrumentation import get_metrics
 from api.errors import register_structured_error_handlers
@@ -31,9 +32,6 @@ from api.validation import (
 )
 from database import init_db
 
-# Import routes
-from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, speech, document_verification, argument_strength, deadline_engine, efiling, notifications as notifications_webhooks, anonymized_cases
-
 logger = structlog.get_logger(__name__)
 
 
@@ -41,8 +39,30 @@ logger = structlog.get_logger(__name__)
 # FastAPI Application
 # ============================================================================
 
+
 def create_app() -> FastAPI:
     """Create FastAPI application"""
+
+    # Import routers lazily so importing this module stays side-effect free.
+    from api.routes import (
+
+        documents,
+        cases,
+        reports,
+        analytics,
+        deadlines,
+        auth,
+        health,
+        case_search,
+        speech,
+        document_verification,
+        argument_strength,
+        deadline_engine,
+        efiling,
+        notifications as notifications_webhooks,
+        anonymized_cases,
+    )
+
 
     settings = get_settings()
 
@@ -91,13 +111,15 @@ def create_app() -> FastAPI:
     app.middleware("http")(request_size_limit_middleware)
     # Idempotency middleware should run early for POST/PUT/PATCH/DELETE
     app.middleware("http")(idempotency_middleware)
-    app.middleware("http")(add_correlation_id_middleware)
     app.middleware("http")(logging_middleware)
+    app.middleware("http")(add_correlation_id_middleware)
     app.middleware("http")(error_handling_middleware)
-    app.middleware("http")(security_headers_middleware)
-    
+
     if settings.RATE_LIMIT_ENABLED:
         app.middleware("http")(rate_limit_middleware)
+
+    # Outermost guard — must be registered last to execute first.
+    app.middleware("http")(request_size_limit_middleware)
     
     # ========================================================================
     # Include Routers

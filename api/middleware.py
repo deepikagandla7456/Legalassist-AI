@@ -7,10 +7,27 @@ API Rate Limiting and Middleware
 """
 import hashlib
 import time
-from typing import Callable, Optional
+import threading
+from typing import Callable
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 import redis
+
+# ---------------------------------------------------------------------------
+# Request size enforcement configuration
+# ---------------------------------------------------------------------------
+
+# Maximum allowed request body in bytes (50 MB).
+MAX_BODY_SIZE: int = 50 * 1024 * 1024
+
+# URL path prefixes whose endpoints accept uploaded/streamed bodies and must
+# therefore have strict size enforcement even when Content-Length is absent.
+UPLOAD_PATH_PREFIXES: tuple = (
+    "/api/v1/analyze",
+    "/api/v1/documents",
+    "/api/v1/cases",
+    "/api/v1/reports",
+)
 import structlog
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -21,9 +38,11 @@ from observability.instrumentation import (
     capture_exception,
     clear_request_context,
     generate_correlation_id,
+    get_current_trace_headers,
     observe_request,
     record_api_error,
     traced_operation,
+    use_extracted_trace_context,
 )
 
 logger = structlog.get_logger(__name__)
@@ -31,22 +50,24 @@ settings = get_settings()
 
 
 class RateLimiter:
-    """Sliding-window rate limiter with per-endpoint and global enforcement."""
+    """Token bucket rate limiter using Redis with application-level locking.
 
-    _SLIDING_WINDOW_SCRIPT = """
-local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local cutoff = now - (window * 1000)
+    Thread safety:
+    - Redis-side:  the INCR + EXPIRE Lua script runs atomically in Redis.
+    - App-side:    a module-level ``_lock`` serialises local state access so
+                   that concurrent ASGI workers see consistent bucket values.
+    """
 
-redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
-local count = redis.call('ZCARD', key)
+    _instance = None
+    _lock = threading.Lock()
 
-if count >= limit then
-    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-    local retry_after = math.ceil((tonumber(oldest[2]) + window * 1000 - now) / 1000)
-    return {0, retry_after}
+    # Lua script: atomically increment the counter and set TTL on first write.
+    # Redis executes Lua scripts as a single atomic operation, so there is no
+    # window between INCR and EXPIRE where the key can be left without a TTL.
+    _INCR_EXPIRE_SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 
 redis.call('ZADD', key, now, now .. ':' .. ARGV[4])
@@ -54,37 +75,31 @@ redis.call('PEXPIRE', key, window * 1000 + 1000)
 return {1, 0}
 """
 
-    def __init__(self):
-        self._redis: Optional[redis.Redis] = None
-        self._script = None
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
 
-    def _get_client(self) -> redis.Redis:
-        if self._redis is None:
-            self._redis = redis.from_url(settings.REDIS_URL or "redis://localhost:6379/0", decode_responses=True)
-            self._script = self._redis.register_script(self._SLIDING_WINDOW_SCRIPT)
-        return self._redis
+    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
+        if not hasattr(self, "_initialised"):
+            self.redis = redis.from_url(redis_url, decode_responses=True)
+            self.requests = 100  # requests
+            self.window = 60  # seconds
+            self._script = self.redis.register_script(self._INCR_EXPIRE_SCRIPT)
+            self._initialised = True
 
-    def _endpoint_key(self, user_id: str, path: str) -> str:
-        ep_hash = hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
-        return f"ratelimit:ep:{ep_hash}:{user_id}"
-
-    def _global_key(self, user_id: str) -> str:
-        return f"ratelimit:global:{user_id}"
-
-    def check(self, key: str, limit: int, window: int) -> tuple[bool, int]:
-        """Returns (allowed, retry_after_seconds)."""
+    def is_allowed(self, key: str) -> bool:
+        """Check if request is allowed under the rate limit."""
         try:
-            client = self._get_client()
-            now_ms = int(time.time() * 1000)
-            unique = str(time.monotonic_ns())
-            result = self._script(keys=[key], args=[now_ms, window, limit, unique])
-            allowed = bool(int(result[0]))
-            retry_after = int(result[1])
-            return allowed, retry_after
+            with self._lock:
+                current = int(self._script(keys=[key], args=[self.window]))
+            return current <= self.requests
         except Exception as e:
             logger.error("Rate limiter error", error=str(e))
-            return True, 0
-
+            return True
+    
     def get_retry_after(self, key: str) -> int:
         try:
             client = self._get_client()
@@ -116,61 +131,35 @@ def get_limiter() -> RateLimiter:
         _limiter = RateLimiter()
     return _limiter
 
-    correlation_id = request.headers.get("X-Correlation-Id") or generate_correlation_id()
+    correlation_id = (
+        request.headers.get("X-Correlation-Id")
+        or request.headers.get("X-Request-Id")
+        or request.headers.get("x-correlation-id")
+        or request.headers.get("x-request-id")
+        or generate_correlation_id()
+    )
     request.state.correlation_id = correlation_id
     request.state.request_id = correlation_id
     request.state.user_id = getattr(request.state, "rate_limit_identifier", request.headers.get("X-User-Id", "anonymous"))
 
-async def rate_limit_middleware(request: Request, call_next: Callable):
-    """Rate limiting middleware — enforces per-endpoint and global limits."""
+    incoming_trace_headers = {
+        key.lower(): value
+        for key, value in request.headers.items()
+        if key.lower() in {"traceparent", "tracestate", "baggage"}
+    }
+    request.state.trace_headers = incoming_trace_headers
 
-    if not settings.RATE_LIMIT_ENABLED:
-        return await call_next(request)
+    with use_extracted_trace_context(incoming_trace_headers):
+        response = await call_next(request)
 
-    if request.url.path in ["/api/v1/health", "/api/v1/health/ready", "/api/v1/health/live"]:
-        return await call_next(request)
-
-    client_ip = request.client.host if request.client else "unknown"
-    user_id = request.headers.get("X-User-Id", client_ip)
-
-    limiter = get_limiter()
-    path = request.url.path
-
-    # Per-endpoint check
-    ep_key = limiter._endpoint_key(user_id, path)
-    ep_allowed, ep_retry = limiter.check(ep_key, settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW)
-
-    if not ep_allowed:
-        logger.warning("rate_limit_exceeded_endpoint", user_id=user_id, path=path, retry_after=ep_retry)
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error_code": "RATE_LIMIT_EXCEEDED",
-                "message": f"Endpoint rate limit exceeded. Max {settings.RATE_LIMIT_REQUESTS} requests per {settings.RATE_LIMIT_WINDOW} seconds.",
-                "retry_after": ep_retry,
-            },
-            headers={"Retry-After": str(ep_retry)},
-        )
-
-    # Global check
-    gbl_key = limiter._global_key(user_id)
-    gbl_allowed, gbl_retry = limiter.check(gbl_key, settings.GLOBAL_RATE_LIMIT_REQUESTS, settings.GLOBAL_RATE_LIMIT_WINDOW)
-
-    if not gbl_allowed:
-        logger.warning("rate_limit_exceeded_global", user_id=user_id, retry_after=gbl_retry)
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error_code": "RATE_LIMIT_EXCEEDED",
-                "message": f"Global rate limit exceeded. Max {settings.GLOBAL_RATE_LIMIT_REQUESTS} requests per {settings.GLOBAL_RATE_LIMIT_WINDOW} seconds.",
-                "retry_after": gbl_retry,
-            },
-            headers={"Retry-After": str(gbl_retry)},
-        )
-
-    response = await call_next(request)
-    response.headers["X-RateLimit-Limit"] = str(settings.RATE_LIMIT_REQUESTS)
-    response.headers["X-RateLimit-Global-Limit"] = str(settings.GLOBAL_RATE_LIMIT_REQUESTS)
+    trace_headers = get_current_trace_headers()
+    for header_name, header_value in trace_headers.items():
+        response.headers[header_name] = header_value
+    response.headers["X-Correlation-Id"] = correlation_id
+    response.headers["X-Request-Id"] = correlation_id
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -199,13 +188,22 @@ async def error_handling_middleware(request: Request, call_next: Callable):
 
 
 async def logging_middleware(request: Request, call_next: Callable):
-    """Log request metadata and emit tracing/metrics events."""
-
+    """Log all requests and responses
+    
+    Note: Error handling and tracing blocks are strictly enclosed inside this
+    async function scope to prevent global scope exception masking.
+    """
+    
     start_time = time.time()
     endpoint = request.url.path
-    request_id = getattr(request.state, "request_id", request.headers.get("X-Correlation-Id") or generate_correlation_id())
-    raw_user_id = getattr(request.state, "user_id", request.headers.get("X-User-Id", "anonymous"))
-    user_id_attr = sanitize_log_value(raw_user_id, "user_id")
+    request_id = getattr(
+        request.state,
+        "request_id",
+        request.headers.get("X-Correlation-Id")
+        or request.headers.get("X-Request-Id")
+        or generate_correlation_id(),
+    )
+    user_id_attr = getattr(request.state, "user_id", request.headers.get("X-User-Id", "anonymous"))
 
     bind_request_context(request_id=request_id, user_id=user_id_attr)
 

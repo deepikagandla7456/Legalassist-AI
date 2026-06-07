@@ -226,6 +226,19 @@ def _sanitize_preview(text: str, max_length: int = 160) -> str:
     return text
 
 
+_SUBJECT_MAX_LEN = 200
+
+
+def _sanitize_subject(text: str) -> str:
+    """Sanitize dynamic content for safe use in email subject lines."""
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]*>", "", text)
+    text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
+    text = " ".join(text.split())
+    return text[:_SUBJECT_MAX_LEN]
+
+
 @dataclass
 class NotificationResult:
     """Result of a notification send attempt"""
@@ -646,7 +659,7 @@ class NotificationService:
             accent_color = "#1a5490" # Info Blue
             urgency_label = "REMINDER"
 
-        subject = f"⚖️ {urgency_label}: {deadline.case_title} - {escaped_type} Deadline"
+        subject = f"⚖️ {urgency_label}: {_sanitize_subject(deadline.case_title)} - {_sanitize_subject(deadline.deadline_type.title())} Deadline"
         
         html_content = f"""
         <!DOCTYPE html>
@@ -1016,13 +1029,22 @@ class NotificationService:
         subject = None
         html_content = None
         try:
-            tmpl = _resolve_notification_template_values(db, deadline, days_left, NotificationChannel.EMAIL, template_language)
-            if tmpl and (tmpl.get("email_html_template") or tmpl.get("email_subject_template")):
-                values = _build_notification_template_values(deadline, days_left, NotificationChannel.EMAIL, template_language)
-                if tmpl.get("email_subject_template"):
-                    subject = _render_notification_template(tmpl["email_subject_template"], values)
-                if tmpl.get("email_html_template"):
-                    html_content = _render_notification_template(tmpl["email_html_template"], values)
+            tmpl = get_notification_template_for_user(db, deadline.user_id)
+            if tmpl and (tmpl.email_html_template or tmpl.email_subject_template):
+                values = {
+                    "case_title": deadline.case_title,
+                    "case_number": getattr(deadline, "case_id", ""),
+                    "deadline_date": deadline.deadline_date.strftime("%d %B %Y") if deadline.deadline_date else "",
+                    "days_left": days_left,
+                    "court": "",
+                    "deadline_type": deadline.deadline_type,
+                    "deadline_description": deadline.description or "",
+                    "link": f"https://legalassist.ai/cases/{deadline.case_id}",
+                }
+                if tmpl.email_subject_template:
+                    subject = _sanitize_subject(render_template(tmpl.email_subject_template, values))
+                if tmpl.email_html_template:
+                    html_content = render_template(tmpl.email_html_template, values)
         except TemplateValidationError as e:
             logger.warning("User email template invalid, falling back to default: %s", str(e))
         except Exception:

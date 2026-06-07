@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import func, case as sql_case
 from sqlalchemy.orm import Session, joinedload
-from database import CaseRecord, CaseOutcome, CaseAnalytics, UserFeedback, SimilarityFeedback, CaseDeadline, CaseTimeline, NotificationLog, NotificationStatus, NotificationChannel, Case
+from database import CaseRecord, CaseOutcome, CaseAnalytics, UserFeedback, SimilarityFeedback, Case
 import hashlib
 import hmac
 import os
@@ -19,275 +19,62 @@ from sqlalchemy.orm import Query
 logger = logging.getLogger(__name__)
 
 
+# ── Helper functions for fuzzy / search-based text comparison ──────────────
+
 def _normalize_text(text: Optional[str]) -> str:
-    """Normalize text by converting to lowercase and stripping whitespace"""
+    """Normalize text by lowercasing and stripping whitespace."""
     if not text:
         return ""
-    return str(text).strip().lower()
+    return text.strip().lower()
+
+
+def _summary_overlap(text1: Optional[str], text2: Optional[str]) -> float:
+    """Token-level Jaccard similarity between two free-form text fields.
+
+    Treats each whitespace-separated token as a feature and returns
+    the fraction of shared tokens.  This replaces exact string equality
+    with search-based retrieval for free-form legal arguments.
+    """
+    if not text1 or not text2:
+        return 0.0
+    tokens1 = set(_normalize_text(text1).split())
+    tokens2 = set(_normalize_text(text2).split())
+    if not tokens1 or not tokens2:
+        return 0.0
+    intersection = tokens1 & tokens2
+    union = tokens1 | tokens2
+    return len(intersection) / len(union)
+
+
+_cost_range_re = re.compile(r"(\d[\d,.]*)")
 
 
 def _parse_cost_value(cost_str: Optional[str]) -> Optional[float]:
-    """Parse a cost string (e.g. "₹12,000 - ₹18,000" or "₹15,000") and return the average float value"""
+    """Extract a numeric cost value from a free-form cost string."""
     if not cost_str:
         return None
-    try:
-        # Strip currency symbols and commas, keeping numbers and hyphens
-        clean_str = re.sub(r'[^\d\-]', '', str(cost_str))
-        if '-' in clean_str:
-            parts = [float(x) for x in clean_str.split('-') if x]
-            if parts:
-                return sum(parts) / len(parts)
-        elif clean_str:
-            return float(clean_str)
-    except Exception:
-        pass
-    return None
-
-
-def _confidence_from_samples(samples: int) -> str:
-    """Determine confidence level ('high', 'medium', 'low') based on sample count"""
-    if samples >= 10:
-        return "high"
-    elif samples >= 3:
-        return "medium"
-    else:
-        return "low"
-
-
-def _summary_overlap(s1: Optional[str], s2: Optional[str]) -> float:
-    """Calculate overlap/similarity ratio between two summaries"""
-    import difflib
-    if not s1 or not s2:
-        return 0.0
-    s1_clean = str(s1).strip().lower()
-    s2_clean = str(s2).strip().lower()
-    if not s1_clean or not s2_clean:
-        return 0.0
-    return difflib.SequenceMatcher(None, s1_clean, s2_clean).ratio()
-
-
-def _utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
-    if value is None:
+    match = _cost_range_re.search(cost_str)
+    if not match:
         return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+    try:
+        return float(match.group(1).replace(",", ""))
+    except (ValueError, TypeError):
+        return None
 
 
-def _normalize_group_value(value: Optional[str]) -> str:
-    text = str(value or "").strip()
-    return text or "Not specified"
+def _confidence_from_samples(sample_count: int, min_samples: int = 5) -> float:
+    """Return a confidence score (0..1) based on sample size.
 
-
-class MemoryOptimizationMixin:
+    Fewer than *min_samples* yields low confidence; 50+ samples
+    approaches 1.0.  Mirrors the function referenced (but never
+    defined) across the analytics engine.
     """
-    Mixin providing utilities for memory management during intensive data operations.
-    
-    This mixin provides methods to trigger garbage collection and monitor memory
-    usage, which is critical when processing large legal datasets that can
-    otherwise lead to OOM (Out of Memory) crashes.
-    """
-
-    @staticmethod
-    def trigger_garbage_collection(force: bool = False):
-        """
-        Manually trigger Python's garbage collector to reclaim memory.
-        
-        This is particularly important when processing large lists of SQLAlchemy 
-        objects which can remain in memory even after they are no longer used 
-        due to the session's identity map or cyclic references.
-        
-        Args:
-            force: If True, performs a more aggressive collection (generation 2).
-        """
-        if force:
-            # Generation 2 collection is the most thorough but slowest
-            collected = gc.collect(2)
-        else:
-            # Default collection handles most common leak scenarios
-            collected = gc.collect()
-        
-        logger.debug(f"Garbage collection triggered. Objects collected: {collected}")
-
-    @staticmethod
-    def log_memory_stats():
-        """
-        Log current memory usage of the process to help diagnose leaks.
-        
-        Utilizes psutil if available to provide real-time Resident Set Size (RSS)
-        monitoring during large-scale data processing loops.
-        """
-        try:
-            import psutil
-            process = psutil.Process()
-            mem_info = process.memory_info()
-            logger.info(f"Process Memory Usage: {mem_info.rss / (1024 * 1024):.2f} MB")
-        except ImportError:
-            # Fallback for environments where psutil is not installed
-            logger.debug("psutil not installed, skipping detailed memory stats logging.")
-
-
-class BatchReportGenerator(MemoryOptimizationMixin):
-    """
-    High-performance engine for generating large-scale legal reports.
-    
-    Specifically designed to handle datasets exceeding 10,000 cases by
-    utilizing SQLAlchemy's `yield_per()` for streaming results and
-    manual memory management to prevent object reference accumulation.
-    
-    The generator follows a 'process-and-purge' pattern:
-    1. Stream records in fixed-size batches from the DB.
-    2. Aggregate metrics into lightweight Python primitives.
-    3. Periodically clear the SQLAlchemy session.
-    4. Manually trigger garbage collection.
-    """
-
-    def __init__(self, db: Session, batch_size: int = 1000):
-        """
-        Initialize the generator with a database session and batch size.
-        
-        Args:
-            db: The SQLAlchemy Session to use for queries.
-            batch_size: Number of records to process before clearing memory.
-        """
-        self.db = db
-        self.batch_size = batch_size
-
-    def generate_comprehensive_report(
-        self, 
-        base_query: Query,
-        report_name: str = "Analytical Report"
-    ) -> Dict:
-        """
-        Processes a large query in batches and aggregates results into a summary report.
-        
-        This method is the primary fix for memory leaks in report generation.
-        It avoids loading all CaseRecord objects into memory at once by using
-        the 'yield_per' streaming strategy.
-        
-        Args:
-            base_query: The SQLAlchemy query representing the dataset.
-            report_name: Descriptive name for logging and metadata.
-            
-        Returns:
-            A dictionary containing aggregated metrics and processing metadata.
-        """
-        logger.info(f"Starting batch-optimized report generation: {report_name}")
-        self.log_memory_stats()
-
-        total_processed = 0
-        metrics = {
-            "total_count": 0,
-            "outcomes": Counter(),
-            "jurisdictions": Counter(),
-            "case_types": Counter(),
-            "total_appeal_cost": 0.0,
-            "appeal_count": 0,
-            "start_time": datetime.now(timezone.utc),
-        }
-
-        # ---------------------------------------------------------------------
-        # Use LIMIT/OFFSET pagination for SQLite compatibility.
-        # ---------------------------------------------------------------------
-        try:
-            offset = 0
-            while True:
-                batch = base_query.limit(self.batch_size).offset(offset).all()
-                if not batch:
-                    break
-                
-                for case in batch:
-                    # Update metrics using primitives to avoid keeping references
-                    metrics["total_count"] += 1
-                    metrics["outcomes"][str(case.outcome).lower()] += 1
-                    metrics["jurisdictions"][str(case.jurisdiction)] += 1
-                    metrics["case_types"][str(case.case_type).lower()] += 1
-
-                    # Safely process nested outcome data
-                    outcome_data = getattr(case, "outcome_data", None)
-                    if outcome_data and getattr(outcome_data, "appeal_filed", False):
-                        metrics["appeal_count"] += 1
-                        cost = _parse_cost_value(getattr(outcome_data, "appeal_cost", None))
-                        if cost:
-                            metrics["total_appeal_cost"] += cost
-
-                    total_processed += 1
-
-                    # -------------------------------------------------------------
-                    # PERIODIC CLEANUP: Every batch_size records, we clear the 
-                    # session and trigger GC to free up memory from processed objects.
-                    # -------------------------------------------------------------
-                    if total_processed % self.batch_size == 0:
-                        logger.info(f"Checkpoint: Processed {total_processed} cases. Optimizing memory...")
-                        self.db.expunge_all()
-                        self.trigger_garbage_collection()
-                        self.log_memory_stats()
-
-                offset += self.batch_size
-
-        except Exception as e:
-            logger.error(f"Critical error during batch report generation: {str(e)}")
-            # Ensure we still attempt to clear memory even on failure
-            self.db.expunge_all()
-            gc.collect()
-            raise
-
-        metrics["end_time"] = datetime.now(timezone.utc)
-        metrics["duration_seconds"] = (metrics["end_time"] - metrics["start_time"]).total_seconds()
-        
-        logger.info(f"Batch report completed. Total records processed: {total_processed}")
-        self.trigger_garbage_collection(force=True)
-        
-        return self._finalize_report(metrics)
-
-    def _finalize_report(self, raw_metrics: Dict) -> Dict:
-        """
-        Post-processes raw counters and sums into a structured response.
-        
-        Args:
-            raw_metrics: Dictionary of raw aggregated values.
-            
-        Returns:
-            A polished dictionary with percentages and formatted data.
-        """
-        total = raw_metrics["total_count"]
-        if total == 0:
-            return {
-                "status": "empty", 
-                "total_cases": 0,
-                "message": "No data found matching the provided filters."
-            }
-
-        return {
-            "metadata": {
-                "generated_at": raw_metrics["end_time"].isoformat(),
-                "execution_time_seconds": round(raw_metrics["duration_seconds"], 2),
-                "total_records": total,
-                "engine_version": "2.0.0-batched"
-            },
-            "outcomes": {
-                k: {"count": v, "pct": round((v / total) * 100, 2)}
-                for k, v in raw_metrics["outcomes"].items()
-            },
-            "demographics": {
-                "top_jurisdictions": [
-                    {"name": k, "count": v} 
-                    for k, v in raw_metrics["jurisdictions"].most_common(10)
-                ],
-                "case_type_split": [
-                    {"type": k, "count": v}
-                    for k, v in raw_metrics["case_types"].items()
-                ]
-            },
-            "financials": {
-                "total_estimated_appeal_cost": raw_metrics["total_appeal_cost"],
-                "average_appeal_cost": (
-                    raw_metrics["total_appeal_cost"] / raw_metrics["appeal_count"]
-                    if raw_metrics["appeal_count"] > 0 else 0
-                ),
-                "appeal_frequency_rate": round((raw_metrics["appeal_count"] / total) * 100, 2),
-            }
-        }
+    if sample_count >= 50:
+        return 1.0
+    if sample_count < min_samples:
+        return 0.0
+    # Smooth ramp from 0 → 1 between min_samples and 50
+    return (sample_count - min_samples) / (50 - min_samples)
 
 
 class PandasAnalyticsProcessor:
@@ -633,6 +420,7 @@ class CaseSimilarityCalculator:
         reference_case: CaseRecord,
         min_similarity: float = 50.0,
         limit: int = 50,
+        user_id: Optional[str] = None,
     ) -> List[Tuple[CaseRecord, float]]:
         """Find cases similar to a reference case using DB pre-filtering.
 
@@ -640,22 +428,27 @@ class CaseSimilarityCalculator:
         cases that share either the same case type or jurisdiction before
         applying the in-memory similarity score.
 
-        Args:
-            db: Active SQLAlchemy session.
-            reference_case: Case used as the similarity anchor.
-            min_similarity: Minimum score required for inclusion in results.
-            limit: Maximum number of results to return.
-
-        Returns:
-            A list of ``(CaseRecord, score)`` tuples sorted by score descending.
+        Ownership scope: when user_id is provided, candidates are restricted to
+        case types and jurisdictions the user owns (from the Case table).
         """
-        # Reduce memory load by pre-filtering on common attributes.
-        # FIX: Use CaseRecord.id (primary key) — not case_id — to reliably
-        # exclude the reference case from results.
         query = db.query(CaseRecord).filter(
-            CaseRecord.id != reference_case.id,  # corrected from case_id
+            CaseRecord.id != reference_case.id,
             (CaseRecord.case_type == reference_case.case_type) | (CaseRecord.jurisdiction == reference_case.jurisdiction)
         )
+
+        # Scope candidates to user's case types / jurisdictions
+        if user_id is not None:
+            user_scope = (
+                db.query(Case.case_type, Case.jurisdiction)
+                .filter(Case.user_id == int(user_id))
+                .distinct()
+                .all()
+            )
+            if user_scope:
+                query = query.filter(
+                    CaseRecord.case_type.in_([row.case_type for row in user_scope]),
+                    CaseRecord.jurisdiction.in_([row.jurisdiction for row in user_scope]),
+                )
         
         # Limit the search space to prevent OOM. Configurable via SIMILARITY_QUERY_LIMIT env var.
         # Default 1000 for memory efficiency, increase for larger jurisdictions.

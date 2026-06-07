@@ -3,13 +3,13 @@ Document Analysis Endpoints
 POST /api/v1/analyze/document - Analyze document asynchronously
 GET /api/v1/analyze/{job_id} - Check analysis job status
 """
-import os
+from datetime import datetime, timezone
 import uuid
 from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends
 from fastapi import Request
-from sqlalchemy.orm import Session
+from fastapi.responses import JSONResponse
 from api.models import DocumentAnalysisRequest, DocumentAnalysisSummary, AnalysisJobResponse
 from api.auth import get_current_user, CurrentUser
 from api.dependencies import get_db_rls
@@ -123,12 +123,12 @@ async def analyze_document(
     if request.text:
         validate_text_input(request.text, max_length=ValidationConfig.MAX_TEXT_LENGTH)
 
-    # SSRF validation: block private/internal IPs for file_url
-    if request.file_url:
-        validate_file_url(request.file_url)
-
-    # Path traversal prevention: canonicalize and restrict file_path
-    safe_path = validate_file_path(request.file_path) if request.file_path else None
+    # Validate file_path is within the upload jail before passing to the worker.
+    # This is defence-in-depth: the worker also validates, but catching it here
+    # returns a clean 400 to the caller rather than a task failure.
+    if request.file_path:
+        from api.validation import validate_upload_file_path
+        request.file_path = validate_upload_file_path(request.file_path)
     
     # Ownership verification: the user must own an Attachment record for this path
     if safe_path:
@@ -210,9 +210,13 @@ async def get_analysis_result(
     status_info = TaskStatus.get_task_status(job_id)
     
     if status_info["status"] != "completed":
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            detail=f"Job is still {status_info['status']}"
+            content={
+                "job_id": job_id,
+                "status": status_info["status"],
+                "detail": f"Job is still {status_info['status']}",
+            },
         )
     
     result = status_info["info"]

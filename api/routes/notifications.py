@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.parse import parse_qsl
 from typing import Any
 
@@ -73,6 +74,8 @@ def _sendgrid_event_to_notification_status(event_type: str) -> NotificationStatu
         return NotificationStatus.DELIVERED
     if normalized in {"bounce", "dropped", "deferred", "blocked", "spamreport", "invalid"}:
         return NotificationStatus.FAILED
+    if normalized in {"open", "click"}:
+        return NotificationStatus.OPENED
     return None
 
 
@@ -116,7 +119,6 @@ def _verify_sendgrid_signature(request: Request, payload: str) -> bool:
     if not signature or not timestamp:
         raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_SIGNATURE_MISSING", message="Missing SendGrid signature headers")
 
-    import time
     try:
         ts = int(timestamp)
     except ValueError:
@@ -164,7 +166,12 @@ def _update_delivery_status(db: Session, message_id: str | None, status_value: N
 
 @router.post("/twilio")
 async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
-    raw_body = (await request.body()).decode("utf-8")
+    raw_bytes = await request.body()
+    try:
+        raw_body = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("twilio_webhook_invalid_utf8", body_length=len(raw_bytes))
+        raw_body = raw_bytes.decode("utf-8", errors="replace")
     params = _parse_twilio_webhook_payload(raw_body)
 
     if not _verify_twilio_signature(request, params):
@@ -188,7 +195,12 @@ async def twilio_delivery_webhook(request: Request, db: Session = Depends(get_db
 
 @router.post("/sendgrid")
 async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_db_rls_optional)) -> dict:
-    raw_body = (await request.body()).decode("utf-8")
+    raw_bytes = await request.body()
+    try:
+        raw_body = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("sendgrid_webhook_invalid_utf8", body_length=len(raw_bytes))
+        raw_body = raw_bytes.decode("utf-8", errors="replace")
 
     if not _verify_sendgrid_signature(request, raw_body):
         raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="SENDGRID_SIGNATURE_INVALID", message="Invalid SendGrid signature")
@@ -207,6 +219,8 @@ async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_
         elif normalized_status == NotificationStatus.FAILED:
             reason = event.get("reason") or event.get("response") or event_type
             result = _update_delivery_status(db, message_id, NotificationStatus.FAILED, error_message=str(reason))
+        elif normalized_status == NotificationStatus.OPENED:
+            result = _update_delivery_status(db, message_id, NotificationStatus.OPENED)
         else:
             result = None
 
