@@ -38,15 +38,28 @@ def _get_int_env(key, default):
     except (ValueError, TypeError):
         return default
 
-class Config:
+class _ConfigMeta(type):
+    """Metaclass that resolves debug-related config dynamically from environment."""
+
+    _DYNAMIC = frozenset({"APP_ENV", "DEBUG", "TESTING", "LOG_LEVEL"})
+
+    def __getattr__(cls, name):
+        if name == "APP_ENV":
+            return _get_val("APP_ENV", _get_val("ENVIRONMENT", "development")).lower()
+        if name == "DEBUG":
+            return _get_bool_env("DEBUG", cls.APP_ENV in ("dev", "development", "local"))
+        if name == "TESTING":
+            return _get_bool_env("TESTING", False)
+        if name == "LOG_LEVEL":
+            return _get_val("LOG_LEVEL", "INFO")
+        raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
+
+
+class Config(metaclass=_ConfigMeta):
     # --- App Identity ---
     APP_NAME = _get_val("APP_NAME", "LegalEase AI")
-    APP_ENV = _get_val("APP_ENV", _get_val("ENVIRONMENT", "development")).lower()
-    DEBUG = _get_bool_env("DEBUG", APP_ENV in ("dev", "development", "local"))
-    TESTING = _get_bool_env("TESTING", False)
     
-    # --- Logging ---
-    LOG_LEVEL = _get_val("LOG_LEVEL", "INFO")
+    # APP_ENV, DEBUG, TESTING, LOG_LEVEL are resolved dynamically via _ConfigMeta.__getattr__
     
     # --- Model Settings (LLM) ---
     # The primary model used for generating summaries and legal remedies analysis.
