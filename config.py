@@ -107,6 +107,9 @@ class Config:
     OTP_EXPIRY_MINUTES = _get_int_env("OTP_EXPIRY_MINUTES", 10)
     OTP_MAX_ATTEMPTS = _get_int_env("OTP_MAX_ATTEMPTS", 3)
     
+    _MISSING = object()
+    _cached_jwt_secret = _MISSING
+
     @classmethod
     def get_jwt_secret(cls):
         """
@@ -119,8 +122,12 @@ class Config:
         NOTE: Automatic generation and writing of .jwt_secret has been disabled 
         for security in all environments.
         """
+        if cls._cached_jwt_secret is not cls._MISSING:
+            return cls._cached_jwt_secret
+
         secret = str(_get_val("JWT_SECRET", "")).strip()
         if secret:
+            cls._cached_jwt_secret = secret
             return secret
             
         secret_file = PROJECT_ROOT / ".jwt_secret"
@@ -128,6 +135,7 @@ class Config:
             try:
                 file_secret = secret_file.read_text(encoding="utf-8").strip()
                 if file_secret:
+                    cls._cached_jwt_secret = file_secret
                     return file_secret
             except Exception as e:
                 logger.warning(f"Failed to read .jwt_secret file: {e}")
@@ -145,18 +153,30 @@ class Config:
     TWILIO_ACCOUNT_SID = _get_val("TWILIO_ACCOUNT_SID", "")
     TWILIO_FROM_NUMBER = _get_val("TWILIO_FROM_NUMBER", "")
 
+    _cached_twilio_auth_token = _MISSING
+
     @classmethod
     def get_twilio_auth_token(cls) -> str:
         """Return the Twilio auth token, retrieved on demand to limit exposure."""
-        return str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        if cls._cached_twilio_auth_token is not cls._MISSING:
+            return cls._cached_twilio_auth_token
+        val = str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        cls._cached_twilio_auth_token = val
+        return val
 
     # --- Notification Settings (Email) ---
     SENDGRID_FROM_EMAIL = _get_val("SENDGRID_FROM_EMAIL", "noreply@legalassist.ai")
 
+    _cached_sendgrid_api_key = _MISSING
+
     @classmethod
     def get_sendgrid_api_key(cls) -> str:
         """Return the SendGrid API key, retrieved on demand to limit exposure."""
-        return str(_get_val("SENDGRID_API_KEY", "") or "")
+        if cls._cached_sendgrid_api_key is not cls._MISSING:
+            return cls._cached_sendgrid_api_key
+        val = str(_get_val("SENDGRID_API_KEY", "") or "")
+        cls._cached_sendgrid_api_key = val
+        return val
 
     # --- Application URLs ---
     BASE_URL = _get_val("BASE_URL", "https://legalassist.ai")
