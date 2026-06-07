@@ -16,16 +16,25 @@ if PROJECT_ENV_PATH.exists():
 else:
     load_dotenv()
 
-def _get_val(key, default=None):
-    # Try Streamlit secrets first (if in a Streamlit context)
+_STREAMLIT_SECRETS = None
+
+def _load_streamlit_secrets():
+    """Load Streamlit secrets once and cache them."""
+    global _STREAMLIT_SECRETS
+    if _STREAMLIT_SECRETS is not None:
+        return _STREAMLIT_SECRETS
     try:
         import streamlit as st
-        if key in st.secrets:
-            return st.secrets[key]
+        _STREAMLIT_SECRETS = dict(st.secrets)
     except (ImportError, RuntimeError, AttributeError, FileNotFoundError):
-        pass
-    
-    # Fallback to environment variables
+        _STREAMLIT_SECRETS = {}
+    return _STREAMLIT_SECRETS
+
+
+def _get_val(key, default=None):
+    secrets = _load_streamlit_secrets()
+    if key in secrets:
+        return secrets[key]
     return os.getenv(key, default)
 
 def _get_bool_env(key, default=False):
