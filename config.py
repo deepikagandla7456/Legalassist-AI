@@ -129,6 +129,9 @@ class Config(metaclass=_ConfigMeta):
     OTP_RATE_LIMIT_HOURS = _get_int_env("OTP_RATE_LIMIT_HOURS", 1)
     OTP_RATE_LIMIT_MAX = _get_int_env("OTP_RATE_LIMIT_MAX", 3)
     
+    _MISSING = object()
+    _cached_jwt_secret = _MISSING
+
     @classmethod
     def get_jwt_secret(cls):
         """
@@ -140,20 +143,26 @@ class Config(metaclass=_ConfigMeta):
         Raises:
             RuntimeError: If JWT_SECRET is not configured in environment variables.
         """
-        # Try environment / streamlit secrets first
+        if cls._cached_jwt_secret is not cls._MISSING:
+            return cls._cached_jwt_secret
+
         secret = str(_get_val("JWT_SECRET", "")).strip()
         if secret:
+            cls._cached_jwt_secret = secret
             return secret
-
-        # Try central secret manager (Vault or env fallback)
-        try:
-            from utils.secret_manager import get_secret
-            vault_secret = get_secret("jwt_secret")
-            if vault_secret:
-                return str(vault_secret).strip()
-        except Exception:
-            pass
-
+            
+        secret_file = PROJECT_ROOT / ".jwt_secret"
+        if secret_file.exists():
+            try:
+                file_secret = secret_file.read_text(encoding="utf-8").strip()
+                if file_secret:
+                    cls._cached_jwt_secret = file_secret
+                    return file_secret
+            except Exception as e:
+                logger.warning(f"Failed to read .jwt_secret file: {e}")
+        
+        # We no longer auto-generate secrets to prevent insecure fallback.
+        # This forces explicit configuration which is a security best practice.
         env_name = cls.APP_ENV.upper()
         raise RuntimeError(
             f"JWT_SECRET is not configured for the {env_name} environment. "
@@ -166,34 +175,31 @@ class Config(metaclass=_ConfigMeta):
     TWILIO_FROM_NUMBER = _get_val("TWILIO_FROM_NUMBER", "")
     TWILIO_AUTH_TOKEN = None
 
+    _cached_twilio_auth_token = _MISSING
+
     @classmethod
     def get_twilio_auth_token(cls) -> str:
         """Return the Twilio auth token, retrieved on demand to limit exposure."""
-        if cls.TWILIO_AUTH_TOKEN is not None:
-            return cls.TWILIO_AUTH_TOKEN
-        # Prefer centralized secret manager
-        try:
-            from utils.secret_manager import get_secret
-            val = get_secret("twilio_auth_token") or _get_val("TWILIO_AUTH_TOKEN", "")
-            return str(val or "")
-        except Exception:
-            return str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        if cls._cached_twilio_auth_token is not cls._MISSING:
+            return cls._cached_twilio_auth_token
+        val = str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        cls._cached_twilio_auth_token = val
+        return val
 
     # --- Notification Settings (Email) ---
     SENDGRID_FROM_EMAIL = _get_val("SENDGRID_FROM_EMAIL", "noreply@legalassist.ai")
     SENDGRID_API_KEY = None
 
+    _cached_sendgrid_api_key = _MISSING
+
     @classmethod
     def get_sendgrid_api_key(cls) -> str:
         """Return the SendGrid API key, retrieved on demand to limit exposure."""
-        if cls.SENDGRID_API_KEY is not None:
-            return cls.SENDGRID_API_KEY
-        try:
-            from utils.secret_manager import get_secret
-            val = get_secret("sendgrid_api_key") or _get_val("SENDGRID_API_KEY", "")
-            return str(val or "")
-        except Exception:
-            return str(_get_val("SENDGRID_API_KEY", "") or "")
+        if cls._cached_sendgrid_api_key is not cls._MISSING:
+            return cls._cached_sendgrid_api_key
+        val = str(_get_val("SENDGRID_API_KEY", "") or "")
+        cls._cached_sendgrid_api_key = val
+        return val
 
     # --- Application URLs ---
     BASE_URL = _get_val("BASE_URL", "https://legalassist.ai")
