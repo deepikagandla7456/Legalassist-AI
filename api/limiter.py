@@ -292,7 +292,9 @@ class DistributedRateLimiter:
             client = await self.get_redis()
             ttl = await client.pttl(self._block_key(identifier, endpoint))
             return max(0, int(ttl))
-        except Exception:
+        except Exception as e:
+        import logging
+        logging.error(f"Limiter error: {e}")
             return 0
 
     async def check_rate_limit(
