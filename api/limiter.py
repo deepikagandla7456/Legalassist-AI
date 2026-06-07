@@ -507,12 +507,29 @@ def _rule_matches(rule_method: str, rule_key: str, rule_type: str, request_metho
     return request_path.startswith(rule_key)
 
 
+def _normalize_path(path: str) -> str:
+    """Return a canonical path for rate-limit rule matching.
+
+    Strips trailing slashes so that /api/v1/auth/token and
+    /api/v1/auth/token/ resolve to the same rule.  Preserves the
+    leading slash and does not collapse double slashes inside the path
+    (those are handled at the router level).
+    """
+    if path != "/" and path.endswith("/"):
+        return path.rstrip("/")
+    return path
+
+
 def get_rate_limit_policy(path: str, method: str) -> tuple[RateLimitRule, bool]:
     request_method = method.upper()
+    # Normalize the incoming path before matching so that trailing-slash
+    # variants (e.g. /api/v1/auth/token/) are treated identically to the
+    # canonical form and cannot bypass endpoint-specific rate limits.
+    normalized = _normalize_path(path)
     for rule_method, rule_key, rule_type, rule in RATE_LIMIT_RULES:
-        if _rule_matches(rule_method, rule_key, rule_type, request_method, path):
+        if _rule_matches(rule_method, rule_key, rule_type, request_method, normalized):
             return rule, True
-    if path.startswith("/api/v1/auth/"):
+    if normalized.startswith("/api/v1/auth/"):
         return RateLimitRule(settings.AUTH_RATE_LIMIT_REQUESTS, settings.AUTH_RATE_LIMIT_WINDOW), False
     return RateLimitRule(settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW), False
 
