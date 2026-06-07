@@ -73,6 +73,8 @@ def _sendgrid_event_to_notification_status(event_type: str) -> NotificationStatu
         return NotificationStatus.DELIVERED
     if normalized in {"bounce", "dropped", "deferred", "blocked", "spamreport", "invalid"}:
         return NotificationStatus.FAILED
+    if normalized in {"open", "click"}:
+        return NotificationStatus.OPENED
     return None
 
 
@@ -217,6 +219,8 @@ async def sendgrid_delivery_webhook(request: Request, db: Session = Depends(get_
         elif normalized_status == NotificationStatus.FAILED:
             reason = event.get("reason") or event.get("response") or event_type
             result = _update_delivery_status(db, message_id, NotificationStatus.FAILED, error_message=str(reason))
+        elif normalized_status == NotificationStatus.OPENED:
+            result = _update_delivery_status(db, message_id, NotificationStatus.OPENED)
         else:
             result = None
 
