@@ -8,11 +8,9 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
-from database import get_db
-from db.models import APIKey
+from database import get_db, db_session
 from db.models import APIKey
 from api.auth import create_access_token, create_api_key_record, CurrentUser, get_current_user, verify_password
-from database import SessionLocal
 from api.models import TokenResponse, APIKeyCreate, APIKeyResponse
 from api.limiter import RateLimit
 import structlog
@@ -43,8 +41,7 @@ async def get_token(
 
     logger.info("token_request_received", username=mask_email(username))
 
-    db = SessionLocal()
-    try:
+    with db_session() as db:
         user = get_user_by_email(db, username)
         if not user or not user.password_hash:
             raise HTTPException(
@@ -65,8 +62,6 @@ async def get_token(
             token_type="bearer",
             expires_in=24 * 3600
         )
-    finally:
-        db.close()
 
 
 @router.post(

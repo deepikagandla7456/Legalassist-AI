@@ -15,7 +15,7 @@ from passlib.context import CryptContext
 
 from api.config import get_settings
 from api.errors import StructuredAPIError
-from database import SessionLocal
+from database import SessionLocal, db_session
 from db.models import APIKey, User
 
 # Import canonical JWT utilities from shared module
@@ -124,7 +124,7 @@ def revoke_jwt_token(token: str) -> bool:
         expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if isinstance(exp, (int, float)) else exp
 
         # Persist revocation
-        with SessionLocal() as db:
+        with db_session() as db:
             # db-level revoke_token is available via database shim
             from database import revoke_token, is_token_revoked
 
@@ -278,14 +278,11 @@ async def get_current_user(
         if not user_id:
             raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="INVALID_TOKEN_PAYLOAD", message="Invalid token payload")
 
-        db = SessionLocal()
-        try:
+        with db_session() as db:
             user = db.query(User).filter(User.id == int(user_id)).first()
             if not user:
                 raise StructuredAPIError(status_code=status.HTTP_401_UNAUTHORIZED, error_code="USER_NOT_FOUND", message="User not found")
             return CurrentUser(user.id, user.email, "admin" if getattr(user, "is_admin", False) else "user")
-        finally:
-            db.close()
     
     # Try API Key from header — look up in database only.
     # Never treat API keys as JWTs; they are opaque secrets validated by hash.
@@ -302,8 +299,7 @@ async def get_current_user(
 
         key_id, secret = api_key.split(".", 1)
 
-        db = SessionLocal()
-        try:
+        with db_session() as db:
             key_record = db.query(APIKey).filter(
                 APIKey.key_id == key_id
             ).first()
@@ -333,8 +329,6 @@ async def get_current_user(
                 email="api_user",
                 role="api"
             )
-        finally:
-            db.close()
 
     # Try X-API-Key header
     

@@ -1,6 +1,6 @@
 from .notifications import NotificationStatus, NotificationChannel, NotificationLog, NotificationTemplate, UserPreference
 from .cases import CaseDeadline, Case, CaseDocument, Attachment, CaseTimeline, CaseNote, CaseNoteVersion, CaseStatus, DocumentType
-from .auth import User, OTPVerification, APIKey, APIKey
+from .auth import User, OTPVerification, APIKey
 from .audit import AuditEvent
 from db.immutable_audit_log import ImmutableAuditLog
 from .feedback import UserFeedback
