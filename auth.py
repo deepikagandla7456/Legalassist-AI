@@ -565,7 +565,9 @@ def verify_jwt_token(token: str) -> Optional[dict]:
     from api.auth import verify_token
     try:
         return verify_token(token)
-    except Exception:
+    except Exception as e:
+    import logging
+    logging.error(f"Auth error: {e}")
         return None
 
 
