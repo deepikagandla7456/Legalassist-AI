@@ -16,6 +16,7 @@ from api.models import (
 from api.auth import get_current_user, CurrentUser
 import structlog
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from database import (
     CaseRecord,
@@ -38,11 +39,16 @@ logger = structlog.get_logger(__name__)
 )
 async def search_cases(
     request: CaseSearchRequest,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> CaseSearchResponse:
     """
-    Search for similar cases in database
-    
+    Search for similar cases in database.
+
+    FastAPI's Depends(get_db) manages the session lifecycle, guaranteeing
+    the connection is always returned to the pool regardless of the exit
+    path (normal return, early return, or unhandled exception).
+
     - **case_number**: Case number to search for
     - **keywords**: Keywords to search
     - **jurisdiction**: Jurisdiction (US, UK, etc.)
@@ -51,7 +57,7 @@ async def search_cases(
     - **year_to**: End year filter
     - **limit**: Max results (1-100)
     - **offset**: Pagination offset
-    
+
     Returns paginated list of matching cases
     """
 
@@ -59,7 +65,7 @@ async def search_cases(
         "Searching cases",
         user_id=current_user.user_id,
         keywords=request.keywords,
-        jurisdiction=request.jurisdiction
+        jurisdiction=request.jurisdiction,
     )
 
     from time import perf_counter
@@ -214,28 +220,23 @@ async def search_cases(
 )
 async def submit_similarity_result_feedback(
     request: SimilarityFeedbackRequest,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> SimilarityFeedbackResponse:
     """Persist user feedback for a similarity search result."""
-    db = None
-    try:
-        db = get_db()
-        query_signature = request.query_signature or ""
-        feedback = submit_similarity_feedback(
-            db,
-            user_id=current_user.user_id,
-            candidate_case_id=request.candidate_case_id,
-            query_signature=query_signature,
-            relevance=request.relevance,
-        )
-        return SimilarityFeedbackResponse(
-            success=True,
-            saved_at=feedback.created_at,
-            feedback_id=feedback.id,
-        )
-    finally:
-        if db is not None:
-            db.close()
+    query_signature = request.query_signature or ""
+    feedback = submit_similarity_feedback(
+        db,
+        user_id=current_user.user_id,
+        candidate_case_id=request.candidate_case_id,
+        query_signature=query_signature,
+        relevance=request.relevance,
+    )
+    return SimilarityFeedbackResponse(
+        success=True,
+        saved_at=feedback.created_at,
+        feedback_id=feedback.id,
+    )
 
 
 def _build_query_signature(request: CaseSearchRequest) -> str:
@@ -335,9 +336,10 @@ async def get_case_timeline(
 )
 async def get_case_details(
     case_id: str,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
-    """Get complete case details from database"""
+    """Get complete case details from database."""
     try:
         case_id_int = int(case_id)
     except (ValueError, TypeError):
@@ -345,27 +347,26 @@ async def get_case_details(
 
     db = get_db()
     try:
-        case = db.query(Case).filter(Case.id == case_id_int).first()
+        case = db.query(Case).filter(
+            Case.id == case_id_int,
+            Case.user_id == int(current_user.user_id),
+        ).first()
         if not case:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-        if case.user_id != int(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
-        latest_doc = None
-        if case.documents:
-            latest_doc = sorted(case.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
+    latest_doc = None
+    if case.documents:
+        latest_doc = sorted(case.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
 
-        return {
-            "case_id": str(case.id),
-            "case_number": case.case_number,
-            "title": case.title or case.case_number,
-            "parties": [],
-            "jurisdiction": case.jurisdiction,
-            "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-            "summary": latest_doc.summary if latest_doc else "",
-        }
-    finally:
-        db.close()
+    return {
+        "case_id": str(case.id),
+        "case_number": case.case_number,
+        "title": case.title or case.case_number,
+        "parties": [],
+        "jurisdiction": case.jurisdiction,
+        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
+        "summary": latest_doc.summary if latest_doc else "",
+    }
 
 
 @router.get(
@@ -375,41 +376,38 @@ async def get_case_details(
 async def list_cases(
     limit: int = 10,
     offset: int = 0,
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
-    """Get list of cases for current user"""
+    """Get list of cases for the current user."""
     try:
         user_id_int = int(current_user.user_id)
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID")
 
-    db = get_db()
-    try:
-        total = db.query(Case).filter(Case.user_id == user_id_int).count()
-        cases = (
-            db.query(Case)
-            .filter(Case.user_id == user_id_int)
-            .order_by(Case.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+    total = db.query(Case).filter(Case.user_id == user_id_int).count()
+    cases = (
+        db.query(Case)
+        .filter(Case.user_id == user_id_int)
+        .order_by(Case.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
-        cases_list = []
-        for c in cases:
-            latest_doc = None
-            if c.documents:
-                latest_doc = sorted(c.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
-            cases_list.append({
-                "case_id": str(c.id),
-                "case_number": c.case_number,
-                "title": c.title or c.case_number,
-                "parties": [],
-                "jurisdiction": c.jurisdiction,
-                "status": c.status.value if hasattr(c.status, 'value') else str(c.status),
-                "summary": latest_doc.summary if latest_doc else "",
-            })
+    cases_list = []
+    for c in cases:
+        latest_doc = None
+        if c.documents:
+            latest_doc = sorted(c.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
+        cases_list.append({
+            "case_id": str(c.id),
+            "case_number": c.case_number,
+            "title": c.title or c.case_number,
+            "parties": [],
+            "jurisdiction": c.jurisdiction,
+            "status": c.status.value if hasattr(c.status, 'value') else str(c.status),
+            "summary": latest_doc.summary if latest_doc else "",
+        })
 
-        return {"total": total, "limit": limit, "offset": offset, "cases": cases_list}
-    finally:
-        db.close()
+    return {"total": total, "limit": limit, "offset": offset, "cases": cases_list}
