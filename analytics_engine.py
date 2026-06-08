@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import func, case as sql_case
 from sqlalchemy.orm import Session, joinedload
-from database import CaseRecord, CaseOutcome, CaseAnalytics, UserFeedback, SimilarityFeedback, Case
+from database import CaseRecord, CaseOutcome, CaseAnalytics, UserFeedback, SimilarityFeedback, Case, CaseDeadline
 import hashlib
 import hmac
 import os
@@ -1458,8 +1458,8 @@ class AnalyticsAggregator:
     """Generate aggregated analytics for dashboard using SQL aggregates"""
     
     @staticmethod
-    def get_dashboard_summary(db: Session) -> Dict:
-        """Get overall dashboard summary using aggregates"""
+    def get_dashboard_summary(db: Session, user_id: Optional[str] = None) -> Dict:
+        """Get dashboard summary with per-user aggregations when user_id is provided."""
         stats = db.query(
             func.count(CaseRecord.id).label('total'),
             func.sum(sql_case((CaseOutcome.appeal_filed == True, 1), else_=0)).label('appeals'),
@@ -1471,8 +1471,8 @@ class AnalyticsAggregator:
         
         total = stats.total or 0
         appeals = stats.appeals or 0
-        
-        return {
+
+        result = {
             "total_cases_processed": total,
             "appeals_filed": appeals,
             "appeal_rate_percent": round((appeals / total * 100), 1) if total > 0 else 0,
@@ -1481,6 +1481,16 @@ class AnalyticsAggregator:
             "settlements": stats.settlements or 0,
             "dismissals": stats.dismissals or 0,
         }
+
+        if user_id is not None:
+            uid = int(user_id)
+            case_query = db.query(Case).filter(Case.user_id == uid)
+            deadline_query = db.query(CaseDeadline).filter(CaseDeadline.user_id == uid)
+            result["active_cases"] = case_query.filter(Case.status.in_(["active", "ACTIVE"])).count()
+            result["total_cases"] = case_query.count()
+            result["pending_deadlines"] = deadline_query.filter(CaseDeadline.is_completed == False).count()
+
+        return result
     
     @staticmethod
     def get_top_judges(db: Session, jurisdiction: str, limit: int = 10) -> List[Dict]:
