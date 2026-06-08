@@ -21,7 +21,6 @@ from api.auth import get_current_user, CurrentUser
 from api.validation import validate_file_upload, validate_file_upload_streaming, ValidationConfig
 import structlog
 from sqlalchemy import func
-from functools import wraps
 
 from database import (
     CaseRecord,
@@ -60,28 +59,31 @@ def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = No
     }
 
 
-def _audit_case_view_route(func):
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        result = await func(*args, **kwargs)
-        case_id = kwargs.get("case_id")
-        current_user = kwargs.get("current_user")
-        if result is not None and case_id is not None and current_user is not None:
-            resource_id = str(case_id)
-            record_immutable_audit_event(
-                event_type="case.viewed",
-                action="viewed",
-                actor_user_id=int(current_user.user_id),
-                resource_type="case",
-                resource_id=resource_id,
-                outcome="success",
-                metadata={
-                    "route": "/api/v1/cases/{case_id}",
-                },
-            )
-        return result
+def _record_case_view_audit(case_id: str, current_user: CurrentUser) -> None:
+    """Record an immutable audit event for a case view.
 
-    return wrapper
+    Called directly inside the route handler so that ``case_id`` and
+    ``current_user`` are always the real, dependency-resolved values rather
+    than relying on ``**kwargs`` inspection, which is unreliable under
+    FastAPI's dependency-injection call convention.
+    """
+    try:
+        record_immutable_audit_event(
+            event_type="case.viewed",
+            action="viewed",
+            actor_user_id=int(current_user.user_id),
+            resource_type="case",
+            resource_id=str(case_id),
+            outcome="success",
+            metadata={"route": "/api/v1/cases/{case_id}"},
+        )
+    except Exception:
+        logger.exception(
+            "audit_event_failed",
+            event_type="case.viewed",
+            case_id=case_id,
+            user_id=current_user.user_id,
+        )
 
 
 def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case:
@@ -373,7 +375,6 @@ async def get_case_timeline(
     "/{case_id}",
     summary="Get case details"
 )
-@_audit_case_view_route
 async def get_case_details(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
@@ -388,8 +389,9 @@ async def get_case_details(
     )
     case = get_owned_case(case_id, current_user, db)
     latest_docs = fetch_latest_documents_per_case(db, [case.id])
-
-    return _build_case_summary_payload(case, latest_docs.get(case.id))
+    result = _build_case_summary_payload(case, latest_docs.get(case.id))
+    _record_case_view_audit(case_id, current_user)
+    return result
 
 
 @router.post(
