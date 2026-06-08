@@ -171,32 +171,6 @@ def _load_trusted_proxies() -> frozenset[str]:
     return frozenset(trusted)
 
 
-def get_trusted_proxies() -> frozenset[str]:
-    """Load trusted proxy IPs from environment (dynamic, per-call).
-
-    Reads ``RATE_LIMIT_TRUSTED_PROXIES`` on every invocation so that
-    configuration changes take effect without a server restart.
-    Silently skips entries that are not valid IP addresses.
-    Always includes loopback addresses.
-    """
-    import os
-    import ipaddress
-
-    raw = os.getenv("RATE_LIMIT_TRUSTED_PROXIES", "")
-    trusted: set[str] = set()
-    for entry in raw.split(","):
-        candidate = entry.strip()
-        if not candidate:
-            continue
-        try:
-            ipaddress.ip_address(candidate)
-            trusted.add(candidate)
-        except ValueError:
-            pass
-    trusted.update({"127.0.0.1", "::1"})
-    return frozenset(trusted)
-
-
 TRUSTED_PROXIES: frozenset[str] = _load_trusted_proxies()
 
 
