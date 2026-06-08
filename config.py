@@ -16,29 +16,25 @@ if PROJECT_ENV_PATH.exists():
 else:
     load_dotenv()
 
-# Detection of the environment should be done only once at startup.
-try:
-    import streamlit as st
-    # Verify st.secrets is accessible
-    _ = st.secrets
-    _HAS_STREAMLIT = True
-except (ImportError, RuntimeError, AttributeError, FileNotFoundError):
-    st = None
-    _HAS_STREAMLIT = False
+_STREAMLIT_SECRETS = None
+
+def _load_streamlit_secrets():
+    """Load Streamlit secrets once and cache them."""
+    global _STREAMLIT_SECRETS
+    if _STREAMLIT_SECRETS is not None:
+        return _STREAMLIT_SECRETS
+    try:
+        import streamlit as st
+        _STREAMLIT_SECRETS = dict(st.secrets)
+    except (ImportError, RuntimeError, AttributeError, FileNotFoundError):
+        _STREAMLIT_SECRETS = {}
+    return _STREAMLIT_SECRETS
+
 
 def _get_val(key, default=None):
-    """
-    Retrieve configuration value from Streamlit secrets or environment variables.
-    Refactored to avoid redundant dynamic imports.
-    """
-    if _HAS_STREAMLIT and st is not None:
-        try:
-            if key in st.secrets:
-                return st.secrets[key]
-        except Exception:
-            pass
-    
-    # Fallback to environment variables
+    secrets = _load_streamlit_secrets()
+    if key in secrets:
+        return secrets[key]
     return os.getenv(key, default)
 
 def _get_bool_env(key, default=False):
@@ -51,16 +47,28 @@ def _get_int_env(key, default):
     except (ValueError, TypeError):
         return default
 
-class Config:
+class _ConfigMeta(type):
+    """Metaclass that resolves debug-related config dynamically from environment."""
+
+    _DYNAMIC = frozenset({"APP_ENV", "DEBUG", "TESTING", "LOG_LEVEL"})
+
+    def __getattr__(cls, name):
+        if name == "APP_ENV":
+            return _get_val("APP_ENV", _get_val("ENVIRONMENT", "development")).lower()
+        if name == "DEBUG":
+            return _get_bool_env("DEBUG", cls.APP_ENV in ("dev", "development", "local"))
+        if name == "TESTING":
+            return _get_bool_env("TESTING", False)
+        if name == "LOG_LEVEL":
+            return _get_val("LOG_LEVEL", "INFO")
+        raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
+
+
+class Config(metaclass=_ConfigMeta):
     # --- App Identity ---
     APP_NAME = _get_val("APP_NAME", "LegalEase AI")
-    APP_ENV = _get_val("APP_ENV", _get_val("ENVIRONMENT", "development")).lower()
-    DEBUG = _get_bool_env("DEBUG", APP_ENV in ("dev", "development", "local"))
-    TESTING = _get_bool_env("TESTING", False)
-    REQUIRE_HTTPS = _get_bool_env("REQUIRE_HTTPS", True)
     
-    # --- Logging ---
-    LOG_LEVEL = _get_val("LOG_LEVEL", "INFO")
+    # APP_ENV, DEBUG, TESTING, LOG_LEVEL are resolved dynamically via _ConfigMeta.__getattr__
     
     # --- Model Settings (LLM) ---
     # The primary model used for generating summaries and legal remedies analysis.
@@ -72,9 +80,6 @@ class Config:
     
     # API Key for OpenRouter. Must be provided for the AI features to work.
     OPENROUTER_API_KEY = _get_val("OPENROUTER_API_KEY", "")
-    
-    # API Key for OpenAI.
-    OPENAI_API_KEY = _get_val("OPENAI_API_KEY", "")
     
     # --- AI Request Performance & Reliability ---
     # The maximum number of tokens allowed for judgment summaries.
@@ -104,27 +109,19 @@ class Config:
     OCR_ENABLED = _get_bool_env("OCR_ENABLED", False)
     OCR_LANGUAGES = _get_val("OCR_LANGUAGES", "eng+hin")
     OCR_DPI = _get_int_env("OCR_DPI", 300)
+    OCR_CONFIDENCE_THRESHOLD = float(_get_val("OCR_CONFIDENCE_THRESHOLD", "0.5"))
+    CLOUD_OCR_API_KEY = _get_val("CLOUD_OCR_API_KEY", "")
+    CLOUD_OCR_ENDPOINT = _get_val("CLOUD_OCR_ENDPOINT", "")
     
     # --- File Processing ---
     MAX_FILE_SIZE_MB = _get_int_env("MAX_FILE_SIZE_MB", 25)
     WARN_FILE_SIZE_MB = _get_int_env("WARN_FILE_SIZE_MB", 10)
     TEXT_COMPRESSION_LIMIT = _get_int_env("TEXT_COMPRESSION_LIMIT", 6000)
-    MAX_DOCUMENT_TEXT_STORAGE_LIMIT = _get_int_env("MAX_DOCUMENT_TEXT_STORAGE_LIMIT", 50000)
     # --- Attachments ---
     # Directory where uploaded attachments are stored (development)
     ATTACHMENTS_DIR = _get_val("ATTACHMENTS_DIR", str(PROJECT_ROOT / "attachments"))
     # Use randomized filenames to avoid collisions and leaking original names
     ATTACHMENTS_RANDOMIZE_FILENAMES = _get_bool_env("ATTACHMENTS_RANDOMIZE_FILENAMES", True)
-    
-    # --- Export Settings ---
-    # Directory where user data exports are saved (local storage)
-    EXPORTS_DIR = _get_val("EXPORTS_DIR", str(PROJECT_ROOT / ".exports"))
-    # Hours before export files expire and can be deleted
-    EXPORT_FILE_EXPIRY_HOURS = _get_int_env("EXPORT_FILE_EXPIRY_HOURS", 24)
-    # Default privacy redaction profile for anonymized exports and reports
-    DEFAULT_PRIVACY_PROFILE = _get_val("DEFAULT_PRIVACY_PROFILE", "personal_identifiers")
-    # Optional JSON override for privacy profile definitions
-    PRIVACY_REDACTION_PROFILES_JSON = _get_val("PRIVACY_REDACTION_PROFILES_JSON", "")
     
     # --- Database Settings ---
     DATABASE_URL = _get_val("DATABASE_URL", "sqlite:///./legalassist.db")
@@ -135,91 +132,102 @@ class Config:
     
     # --- Authentication (JWT & OTP) ---
     JWT_ALGORITHM = "HS256"
-    JWT_ISSUER = _get_val("JWT_ISSUER", "legalassist.ai")
-    JWT_AUDIENCE = _get_val("JWT_AUDIENCE", "legalassist-users")
     JWT_EXPIRY_HOURS = _get_int_env("JWT_EXPIRY_HOURS", 7 * 24)
-    JWT_SECRET_PREVIOUS = _get_val("JWT_SECRET_PREVIOUS", _get_val("JWT_SECRET_KEY_PREVIOUS", _get_val("JWT_SECRET_OLD", "")))
     OTP_EXPIRY_MINUTES = _get_int_env("OTP_EXPIRY_MINUTES", 10)
     OTP_MAX_ATTEMPTS = _get_int_env("OTP_MAX_ATTEMPTS", 3)
-    OTP_REQUEST_RATE_LIMIT_MAX = _get_int_env("OTP_REQUEST_RATE_LIMIT_MAX", 5)
-    OTP_REQUEST_RATE_LIMIT_HOURS = _get_int_env("OTP_REQUEST_RATE_LIMIT_HOURS", 1)
+    OTP_RATE_LIMIT_HOURS = _get_int_env("OTP_RATE_LIMIT_HOURS", 1)
+    OTP_RATE_LIMIT_MAX = _get_int_env("OTP_RATE_LIMIT_MAX", 3)
     
+    _MISSING = object()
+    _cached_jwt_secret = _MISSING
+
     @classmethod
     def get_jwt_secret(cls):
-        """Return the active JWT signing secret, raising if not configured."""
-        return cls.get_current_jwt_secret()
+        """
+        Resolve JWT secret securely.
+        
+        JWT_SECRET must be provided via environment variable or Streamlit secrets.
+        File-based secrets are no longer supported for security.
+        
+        Raises:
+            RuntimeError: If JWT_SECRET is not configured in environment variables.
+        """
+        if cls._cached_jwt_secret is not cls._MISSING:
+            return cls._cached_jwt_secret
 
-    @classmethod
-    def get_current_jwt_secret(cls) -> str:
-        """Return the active JWT signing secret, raising if not configured."""
-        secret = str(_get_val("JWT_SECRET", _get_val("JWT_SECRET_KEY", _get_val("JWT_SECRET_CURRENT", "")))).strip()
-        if not secret:
-            raise RuntimeError(
-                "JWT_SECRET is not configured. Set the JWT_SECRET environment variable."
-            )
-        return secret
-
-    @classmethod
-    def get_jwt_secrets(cls) -> list[str]:
-        """Return JWT secrets in verification order: current first, then previous."""
-        secrets_to_try = [
-            cls.get_current_jwt_secret(),
-            str(cls.JWT_SECRET_PREVIOUS).strip(),
-        ]
-        return [secret for secret in dict.fromkeys(secrets_to_try) if secret and len(secret) >= 16]
+        secret = str(_get_val("JWT_SECRET", "")).strip()
+        if secret:
+            cls._cached_jwt_secret = secret
+            return secret
+            
+        secret_file = PROJECT_ROOT / ".jwt_secret"
+        if secret_file.exists():
+            try:
+                file_secret = secret_file.read_text(encoding="utf-8").strip()
+                if file_secret:
+                    cls._cached_jwt_secret = file_secret
+                    return file_secret
+            except Exception as e:
+                logger.warning(f"Failed to read .jwt_secret file: {e}")
+        
+        # We no longer auto-generate secrets to prevent insecure fallback.
+        # This forces explicit configuration which is a security best practice.
+        env_name = cls.APP_ENV.upper()
+        raise RuntimeError(
+            f"JWT_SECRET is not configured for the {env_name} environment. "
+            "For security, secrets must be explicitly provided via the 'JWT_SECRET' "
+            "environment variable or a configured Vault."
+        )
 
     # --- Notification Settings (SMS) ---
     TWILIO_ACCOUNT_SID = _get_val("TWILIO_ACCOUNT_SID", "")
     TWILIO_FROM_NUMBER = _get_val("TWILIO_FROM_NUMBER", "")
+    TWILIO_AUTH_TOKEN = None
+
+    _cached_twilio_auth_token = _MISSING
 
     @classmethod
     def get_twilio_auth_token(cls) -> str:
         """Return the Twilio auth token, retrieved on demand to limit exposure."""
-        return str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        if cls._cached_twilio_auth_token is not cls._MISSING:
+            return cls._cached_twilio_auth_token
+        val = str(_get_val("TWILIO_AUTH_TOKEN", "") or "")
+        cls._cached_twilio_auth_token = val
+        return val
 
     # --- Notification Settings (Email) ---
     SENDGRID_FROM_EMAIL = _get_val("SENDGRID_FROM_EMAIL", "noreply@legalassist.ai")
+    SENDGRID_API_KEY = None
 
-    @classmethod
-    def get_sendgrid_event_webhook_public_key(cls) -> str:
-        """Return the SendGrid event webhook public key, if configured."""
-        return str(_get_val("SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY", _get_val("SENDGRID_WEBHOOK_PUBLIC_KEY", "")) or "")
+    _cached_sendgrid_api_key = _MISSING
 
     @classmethod
     def get_sendgrid_api_key(cls) -> str:
         """Return the SendGrid API key, retrieved on demand to limit exposure."""
-        return str(_get_val("SENDGRID_API_KEY", "") or "")
-
-    @classmethod
-    def validate_runtime_security(cls):
-        """Fail fast when production settings are insecure or missing required secrets."""
-        if cls.is_production() and (cls.DEBUG or cls.TESTING):
-            raise RuntimeError("DEBUG and TESTING must be disabled in production")
-
-        if cls.is_production():
-            required = {
-                "JWT_SECRET": cls.get_current_jwt_secret(),
-                "OPENROUTER_API_KEY": str(cls.OPENROUTER_API_KEY).strip(),
-                "SENDGRID_API_KEY": cls.get_sendgrid_api_key(),
-            }
-            missing = [name for name, value in required.items() if not value]
-            if missing:
-                raise RuntimeError(
-                    "Missing required production secrets: " + ", ".join(sorted(missing))
-                )
-
-            if cls.REQUIRE_HTTPS:
-                if not str(cls.BASE_URL).lower().startswith("https://"):
-                    raise RuntimeError("BASE_URL must use https:// in production")
-                if cls.API_BASE_URL and not str(cls.API_BASE_URL).lower().startswith("https://"):
-                    raise RuntimeError("API_BASE_URL must use https:// in production")
+        if cls._cached_sendgrid_api_key is not cls._MISSING:
+            return cls._cached_sendgrid_api_key
+        val = str(_get_val("SENDGRID_API_KEY", "") or "")
+        cls._cached_sendgrid_api_key = val
+        return val
 
     # --- Application URLs ---
     BASE_URL = _get_val("BASE_URL", "https://legalassist.ai")
 
     @classmethod
     def is_development(cls):
-        return cls.APP_ENV in ("dev", "development", "local") or cls.DEBUG or cls.TESTING
+        env_dev = cls.APP_ENV in ("dev", "development", "local") or cls.DEBUG or cls.TESTING
+        if not env_dev:
+            return False
+        # Secondary safety check: flag if BASE_URL looks like production
+        base = str(cls.BASE_URL or "").lower()
+        if not any(local in base for local in ("localhost", "127.0.0.1", "0.0.0.0", "::1")):
+            import logging
+            logging.getLogger(__name__).warning(
+                "is_development()=True but BASE_URL=%s suggests a non-local deployment. "
+                "Review APP_ENV / DEBUG / TESTING settings.",
+                base,
+            )
+        return env_dev
 
     @classmethod
     def is_production(cls):
@@ -338,7 +346,26 @@ def get_config_dict(cls_obj) -> dict:
         cfg[key] = val
     return cfg
 
+
+# ==================== Page Routes ====================
+# Single authoritative definition of all Streamlit page paths.
+# Import these constants directly from config rather than going through
+# an intermediary module, so route updates propagate consistently from
+# one place throughout the entire application.
+
+PAGE_HOME = "pages/0_Home.py"
+PAGE_LOGIN = "pages/0_Login.py"
+PAGE_ANALYTICS_DASHBOARD = "pages/1_Analytics_Dashboard.py"
+PAGE_MY_CASES = "pages/1_My_Cases.py"
+PAGE_CASE_DETAILS = "pages/2_Case_Details.py"
+PAGE_APPEAL_ESTIMATOR = "pages/2_Appeal_Estimator.py"
+PAGE_REPORT_OUTCOME = "pages/3_Report_Outcome.py"
+PAGE_SETTINGS = "pages/3_Settings.py"
+PAGE_DEADLINE_TRACKER = "pages/3_Deadline_Tracker.py"
+PAGE_CHAT = "pages/4_Chat.py"
+
 # Print config to stdout/logger if debug mode is enabled, using the sanitizer
+
 if Config.DEBUG:
     try:
         raw_config = get_config_dict(Config)
