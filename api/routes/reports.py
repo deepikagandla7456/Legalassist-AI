@@ -235,6 +235,7 @@ async def generate_report(
         privacy_profile=request.privacy_profile,
     )
 
+
     return ReportGenerationResponse(
         report_id=db_report.report_id,
         job_id=task.id,
