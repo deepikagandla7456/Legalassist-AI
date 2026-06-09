@@ -10,16 +10,37 @@ from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
 import structlog
 from datetime import datetime, timedelta, timezone
+from database import get_db, UserPreference
 
 router = APIRouter(prefix="/api/v1/deadlines", tags=["deadlines"])
 logger = structlog.get_logger(__name__)
 
 
-def _derive_deadline_status(due_date: datetime) -> str:
-    """Return 'overdue' if past due, 'pending' otherwise."""
-    if due_date < datetime.now(timezone.utc):
-        return "overdue"
-    return "pending"
+def _load_reminder_settings(user_id: str) -> tuple:
+    """Load reminder settings from user preferences. Returns (enabled, days)."""
+    db = None
+    try:
+        db = get_db()
+        pref = db.query(UserPreference).filter(
+            UserPreference.user_id == int(user_id)
+        ).first()
+        if pref:
+            enabled = pref.notify_1_day or pref.notify_3_days or pref.notify_10_days or pref.notify_30_days
+            if pref.notify_1_day:
+                days = 1
+            elif pref.notify_3_days:
+                days = 3
+            elif pref.notify_10_days:
+                days = 10
+            elif pref.notify_30_days:
+                days = 30
+            else:
+                days = 7
+            return (enabled, days)
+        return (True, 7)
+    finally:
+        if db:
+            db.close()
 
 
 @router.get(
@@ -39,6 +60,8 @@ async def get_upcoming_deadlines(
         offset=offset,
     )
     
+    reminder_enabled, reminder_days = _load_reminder_settings(current_user.user_id)
+
     now = datetime.now(timezone.utc)
     deadlines = [
         DeadlineResponse(
@@ -50,9 +73,9 @@ async def get_upcoming_deadlines(
             due_date=now + timedelta(days=3),
             days_until_due=3,
             priority="critical",
-            status=_derive_deadline_status(now + timedelta(days=3)),
-            reminder_enabled=True,
-            reminder_days=7,
+            status="pending",
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
         DeadlineResponse(
@@ -64,9 +87,9 @@ async def get_upcoming_deadlines(
             due_date=now + timedelta(days=10),
             days_until_due=10,
             priority="high",
-            status=_derive_deadline_status(now + timedelta(days=10)),
-            reminder_enabled=True,
-            reminder_days=7,
+            status="pending",
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
         DeadlineResponse(
@@ -78,9 +101,9 @@ async def get_upcoming_deadlines(
             due_date=now + timedelta(days=21),
             days_until_due=21,
             priority="medium",
-            status=_derive_deadline_status(now + timedelta(days=21)),
-            reminder_enabled=True,
-            reminder_days=7,
+            status="pending",
+            reminder_enabled=reminder_enabled,
+            reminder_days=reminder_days,
             created_at=now
         ),
                 {**base_params, "limit": limit, "offset": offset},
@@ -142,20 +165,20 @@ async def get_deadline_details(
         user_id=current_user.user_id
     )
     
+    reminder_enabled, reminder_days = _load_reminder_settings(current_user.user_id)
     now = datetime.now(timezone.utc)
-    due = now + timedelta(days=5)
     return DeadlineResponse(
         deadline_id=deadline_id,
         user_id=current_user.user_id,
         case_id="case_001",
         title="Example Deadline",
         description="Example deadline description",
-        due_date=due,
+        due_date=now + timedelta(days=5),
         days_until_due=5,
         priority="high",
-        status=_derive_deadline_status(due),
-        reminder_enabled=True,
-        reminder_days=7,
+        status="pending",
+        reminder_enabled=reminder_enabled,
+        reminder_days=reminder_days,
         created_at=now
     )
 
@@ -189,6 +212,7 @@ async def create_deadline(
         title=request.title
     )
     
+    reminder_enabled, pref_reminder_days = _load_reminder_settings(current_user.user_id)
     now = datetime.now(timezone.utc)
     days_until = (due_date - now).days
     
@@ -201,9 +225,9 @@ async def create_deadline(
         due_date=normalized_due_date,
         days_until_due=days_until,
         priority=priority,
-        status=_derive_deadline_status(due_date),
-        reminder_enabled=True,
-        reminder_days=request.reminder_days,
+        status="pending",
+        reminder_enabled=reminder_enabled,
+        reminder_days=pref_reminder_days,
         created_at=now
     )
 
@@ -255,8 +279,8 @@ async def update_deadline(
         user_id=current_user.user_id
     )
     
+    reminder_enabled, pref_reminder_days = _load_reminder_settings(current_user.user_id)
     now = datetime.now(timezone.utc)
-    due = due_date or (now + timedelta(days=7))
     return DeadlineResponse(
         deadline_id=str(updated_deadline.id),
         user_id=str(updated_deadline.user_id),
@@ -285,13 +309,13 @@ async def update_deadline(
         case_id="case_001",
         title=title or "Updated Deadline",
         description="Updated description",
-        due_date=due,
+        due_date=due_date or (now + timedelta(days=7)),
         days_until_due=7,
         priority=priority or "medium",
-        status=_derive_deadline_status(due),
-        reminder_enabled=True,
-        reminder_days=7,
-        created_at=updated_deadline.created_at
+        status="pending",
+        reminder_enabled=reminder_enabled,
+        reminder_days=pref_reminder_days,
+        created_at=now
     )
 
 
