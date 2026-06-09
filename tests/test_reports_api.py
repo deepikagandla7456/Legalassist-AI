@@ -64,7 +64,7 @@ def mock_report():
     report.report_id = str(uuid.uuid4())
     report.user_id = 42
     report.case_id = 100
-    report.celery_task_id = "celery-task-id-123"
+    report.job_id = "celery-task-id-123"
     report.status = ReportStatus.PENDING
     report.report_type = ReportType.COMPREHENSIVE
     report.format = ReportFormat.PDF
@@ -89,7 +89,7 @@ def completed_report():
     report.report_id = str(uuid.uuid4())
     report.user_id = 42
     report.case_id = 100
-    report.celery_task_id = "celery-task-id-456"
+    report.job_id = "celery-task-id-456"
     report.status = ReportStatus.COMPLETED
     report.report_type = ReportType.COMPREHENSIVE
     report.format = ReportFormat.PDF
@@ -125,7 +125,7 @@ def test_generate_report_creates_db_record_and_enqueues_task(
     
     def mock_create_report(**kwargs):
         mock_report.report_id = kwargs["report_id"]
-        mock_report.celery_task_id = "pending"
+        mock_report.job_id = "pending"
         return mock_report
     
     monkeypatch.setattr(reports_route, "get_db", lambda: iter([mock_db]))

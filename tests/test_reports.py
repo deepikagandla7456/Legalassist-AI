@@ -105,7 +105,7 @@ def test_generate_report_flow_reuses_single_report_id(monkeypatch):
         mock_report.report_id = kwargs["report_id"]
         mock_report.user_id = kwargs["user_id"]
         mock_report.case_id = kwargs["case_id"]
-        mock_report.celery_task_id = kwargs["celery_task_id"]
+        mock_report.job_id = kwargs["celery_task_id"]
         mock_report.report_type = kwargs["report_type"]
         mock_report.format = kwargs["format"]
         mock_report.style = kwargs["style"]
@@ -135,7 +135,6 @@ def test_generate_report_flow_reuses_single_report_id(monkeypatch):
 
     assert mock_report.report_id == report_id
     assert mock_report.job_id == mock_task.id
-    assert mock_report.celery_task_id == mock_task.id
 
     generated_file_name = f"{mock_report.case_id}_{mock_report.report_type}_{report_id}.pdf"
     assert generated_file_name.endswith(f"{report_id}.pdf")

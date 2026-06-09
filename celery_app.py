@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from types import SimpleNamespace
 from celery import Celery, Task
+from celery.result import AsyncResult
 from api.validation import validate_file_url, fetch_url_safe
 
 # Database & Core Imports
@@ -22,8 +23,12 @@ from core.app_utils import (
 from api.idempotency import IdempotencyManager
 from api.validation import ValidationConfig
 from db.crud.reports import update_report_status
-from db.session import db_session
+from db.session import db_session, get_db
 from database import Attachment, User, SessionLocal, get_case_by_id, get_case_document_by_id, update_case_document, create_timeline_event
+
+from api.config import get_settings
+from observability.integration import initialize_observability_for_environment
+from observability.instrumentation import generate_correlation_id
 
 # ============================================================================
 # INITIALIZATION & LOGGING
@@ -395,6 +400,24 @@ def analyze_document_task(self, user_id, document_id, text=None, file_bytes=None
     db = SessionLocal()
     idemp = IdempotencyManager()
     
+    start_time = datetime.utcnow()
+    content_parts = []
+    if file_bytes:
+        content_parts.append(hashlib.sha256(file_bytes).hexdigest())
+    if text:
+        content_parts.append(hashlib.sha256(text.encode("utf-8")).hexdigest())
+    if file_path:
+        content_parts.append(hashlib.sha256(file_path.encode("utf-8")).hexdigest())
+    if file_url:
+        content_parts.append(hashlib.sha256(file_url.encode("utf-8")).hexdigest())
+    content_hash = content_parts[0] if content_parts else ""
+    idempotency_key = f"analyze:{user_id}:{document_id}:{content_hash}"
+
+    if not idemp.acquire(key=idempotency_key, ttl=300):
+        existing = idemp.get_result(idempotency_key)
+        if existing:
+            return existing
+
     # 1. State Recovery
     state = PipelineStateManager.get_state(db, document_id)
     stage = state.current_stage if state else "PENDING"

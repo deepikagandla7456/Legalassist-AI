@@ -43,7 +43,7 @@ def create_report(
         report_id=report_id,
         user_id=user_id,
         case_id=case_id,
-        celery_task_id=celery_task_id,
+        job_id=celery_task_id,
         report_type=ReportType(report_type),
         format=ReportFormat(format),
         style=style,
@@ -94,7 +94,7 @@ def get_report_by_celery_task_id(
         Report model or None if not found
     """
     return db.query(Report).filter(
-        Report.celery_task_id == celery_task_id
+        Report.job_id == celery_task_id
     ).first()
 
 
