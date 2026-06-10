@@ -6,6 +6,7 @@ GET /api/v1/reports/{report_id}/download - Download report
 GET /api/v1/reports - List user reports with batch-synced statuses
 """
 import uuid
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Query
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, status, Depends
@@ -234,6 +235,7 @@ async def generate_report(
         privacy_profile=request.privacy_profile,
     )
 
+
     return ReportGenerationResponse(
         report_id=db_report.report_id,
         job_id=task.id,
@@ -360,8 +362,8 @@ async def download_report(
     summary="List user's reports with batch-synced statuses"
 )
 async def list_reports(
-    limit: int = 10,
-    offset: int = 0,
+    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of reports to return (1–100)"),
+    offset: int = Query(default=0, ge=0, description="Number of reports to skip"),
     status_filter: str | None = None,
     db: Session = Depends(get_db_rls),
     current_user: CurrentUser = Depends(get_current_user)

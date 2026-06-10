@@ -26,6 +26,7 @@ from typing import Dict, Any, Optional
 import io
 import requests
 from types import SimpleNamespace
+
 from api.validation import validate_file_url, fetch_url_safe
 
 try:
@@ -137,8 +138,10 @@ from core.app_utils import (
 from api.validation import ValidationConfig
 from api.config import get_settings
 from db.crud.reports import update_report_status
-from db.session import db_session
-from database import Attachment, SessionLocal, get_case_by_id, get_case_document_by_id, update_case_document, create_timeline_event
+
+from api.config import get_settings
+from observability.integration import initialize_observability_for_environment
+from observability.instrumentation import generate_correlation_id
 
 # ============================================================================
 # INITIALIZATION & LOGGING
@@ -684,13 +687,13 @@ def analyze_document_task(
     Uses callbacks for async state updates instead of synchronous blocking.
     """
     
-    # Idempotency: prevent duplicate processing for same user/document
+
     content_parts = []
     if file_bytes:
         content_parts.append(hashlib.sha256(file_bytes).hexdigest())
     if text:
         content_parts.append(hashlib.sha256(text.encode("utf-8")).hexdigest())
-    content_hash = hashlib.sha256("|".join(content_parts).encode()).hexdigest()[:16] if content_parts else ""
+
 
     idemp = IdempotencyManager()
     idempotency_key = f"analyze:{user_id}:{document_id}:{content_hash}"

@@ -7,6 +7,8 @@ GET /api/v1/cases/{id}/timeline - Get case timeline
 from datetime import datetime, timedelta, timezone
 from typing import Dict
 
+from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Request, Query
+from sqlalchemy.orm import Session
 from fastapi import APIRouter, HTTPException, status, Depends
 from api.models import (
     CaseSearchRequest, CaseSearchResponse, CaseResult,
@@ -30,6 +32,62 @@ from analytics_engine import CaseSimilarityCalculator
 
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 logger = structlog.get_logger(__name__)
+
+
+def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
+    return {
+        "case_id": str(case.id),
+        "case_number": case.case_number,
+        "title": case.title or case.case_number,
+        "parties": ["Smith", "Jones"],  # Placeholder
+        "jurisdiction": case.jurisdiction,
+        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
+        "summary": latest_doc.summary if latest_doc else "",
+    }
+
+
+def _record_case_view_audit(case_id: str, current_user: CurrentUser) -> None:
+    """Record an immutable audit event for a case view.
+
+    Called directly inside the route handler so that ``case_id`` and
+    ``current_user`` are always the real, dependency-resolved values rather
+    than relying on ``**kwargs`` inspection, which is unreliable under
+    FastAPI's dependency-injection call convention.
+    """
+    try:
+        record_immutable_audit_event(
+            event_type="case.viewed",
+            action="viewed",
+            actor_user_id=int(current_user.user_id),
+            resource_type="case",
+            resource_id=str(case_id),
+            outcome="success",
+            metadata={"route": "/api/v1/cases/{case_id}"},
+        )
+    except Exception:
+        logger.exception(
+            "audit_event_failed",
+            event_type="case.viewed",
+            case_id=case_id,
+            user_id=current_user.user_id,
+        )
+
+
+def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case:
+    try:
+        case_id_int = int(case_id)
+        user_id_int = int(current_user.user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid case ID format")
+
+    case = db.query(Case).filter(Case.id == case_id_int).first()
+    if not case:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    if current_user.role != "admin" and case.user_id != user_id_int:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
+
+    return case
 
 
 @router.post(
@@ -337,6 +395,32 @@ async def get_case_timeline(
 async def get_case_details(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> dict:
+    """Get complete case details"""
+    
+    logger.info(
+        "Retrieving case details",
+        case_id=case_id,
+        user_id=current_user.user_id
+    )
+    case = get_owned_case(case_id, current_user, db)
+    latest_docs = fetch_latest_documents_per_case(db, [case.id])
+    result = _build_case_summary_payload(case, latest_docs.get(case.id))
+    _record_case_view_audit(case_id, current_user)
+    return result
+
+
+@router.post(
+    "/{case_id}/documents/upload",
+    summary="Upload a PDF or image document to a case",
+)
+async def upload_case_document_endpoint(
+    case_id: str,
+    http_request: Request,
+    file: UploadFile = File(...),
+    document_type: str = Form(default="Other"),
+    current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Get complete case details from database."""
@@ -374,8 +458,8 @@ async def get_case_details(
     summary="List user's cases"
 )
 async def list_cases(
-    limit: int = 10,
-    offset: int = 0,
+    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of cases to return (1–100)"),
+    offset: int = Query(default=0, ge=0, description="Number of cases to skip"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
