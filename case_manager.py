@@ -275,6 +275,10 @@ def get_user_cases_summary(user_id: int, include_closed: bool = True) -> List[Di
 
 
 def get_case_detail(user_id: int, case_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        case_id = int(case_id)
+    except (ValueError, TypeError):
+        return None
     db = SessionLocal()
     try:
         case = get_case_by_id(db, case_id)
