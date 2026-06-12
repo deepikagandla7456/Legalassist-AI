@@ -65,6 +65,8 @@ from db.models import (
     CaseArgument,
     KnowledgeGraphEdge,
     PrecedentMatch,
+    IdempotencyKey,
+    IdempotencyKeyStatus,
 )
 
 from db.crud.notifications import (
@@ -1288,23 +1290,17 @@ def cleanup_expired_revoked_tokens(db: Session) -> int:
 
 def submit_similarity_feedback(
     db: Session,
-    case_id: int,
-    event_type: str,
-    description: str,
-    event_date: Optional[dt.datetime] = None,
-    metadata: Optional[dict] = None,
-) -> CaseTimeline:
-    """Create a new timeline event.
-    
-    Note: Ensures that the instantiated CaseTimeline is correctly added to the
-    session using the explicit local variable reference to prevent NameErrors.
-    """
-    event = CaseTimeline(
-        case_id=case_id,
-        event_type=event_type,
-        description=description,
-        event_date=event_date or dt.datetime.now(dt.timezone.utc),
-        event_metadata=metadata,
+    user_id: int | str,
+    candidate_case_id: int,
+    query_signature: str,
+    relevance: bool,
+) -> SimilarityFeedback:
+    """Submit similarity feedback for search queries."""
+    feedback = SimilarityFeedback(
+        user_id=str(user_id),
+        candidate_case_id=candidate_case_id,
+        query_signature=query_signature,
+        relevance=relevance,
     )
     db.add(feedback)
     db.commit()
@@ -1330,6 +1326,67 @@ def get_similarity_feedback(
         query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
 
     return query.order_by(SimilarityFeedback.created_at.desc()).limit(limit).all()
+
+
+def reserve_idempotency_key(db: Session, key: str, method: str, path: str) -> tuple[IdempotencyKey, bool]:
+    """Reserve an idempotency key within a nested transaction/savepoint."""
+    from sqlalchemy.exc import IntegrityError
+    ik = IdempotencyKey(
+        key=key,
+        method=method,
+        path=path,
+        status=IdempotencyKeyStatus.IN_PROGRESS,
+    )
+    try:
+        with db.begin_nested():
+            db.add(ik)
+        db.commit()
+        db.refresh(ik)
+        return ik, True
+    except IntegrityError:
+        existing = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+        return existing, False
+
+
+def set_idempotency_response(db: Session, key: str, status_code: int, headers: dict, body: str) -> IdempotencyKey:
+    """Set the response payload for a completed idempotency key."""
+    from sqlalchemy.exc import IntegrityError
+    ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+    if not ik:
+        try:
+            ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
+            with db.begin_nested():
+                db.add(ik)
+            db.commit()
+        except IntegrityError:
+            ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+            if not ik:
+                ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
+                db.add(ik)
+                db.commit()
+    ik.status = IdempotencyKeyStatus.COMPLETED
+    ik.response_status = status_code
+    ik.response_headers = headers
+    ik.response_body = body
+    ik.completed_at = dt.datetime.now(dt.timezone.utc)
+    db.commit()
+    db.refresh(ik)
+    return ik
+
+
+def get_idempotency_response(db: Session, key: str) -> Optional[dict]:
+    """Retrieve the cached response for a completed idempotency key."""
+    ik = db.query(IdempotencyKey).filter(
+        IdempotencyKey.key == key,
+        IdempotencyKey.status == IdempotencyKeyStatus.COMPLETED
+    ).first()
+    if ik:
+        return {
+            "status_code": ik.response_status,
+            "headers": ik.response_headers,
+            "body": ik.response_body,
+        }
+    return None
 
 
 
