@@ -26,6 +26,7 @@ from typing import Dict, Any, Optional
 import io
 import requests
 from types import SimpleNamespace
+from core.policy_engine import evaluate, UserContext, PolicyDecision
 
 from api.validation import validate_file_url, fetch_url_safe
 
@@ -1366,17 +1367,18 @@ def process_case_document_upload_task(
     try:
         case = get_case_by_id(session, int(case_id))
 
-        # Ownership check: compare as integers to prevent string-based bypass.
-        # The task receives user_id as a string from the Celery JSON queue.
-        # Using str(case.user_id) != str(user_id) allows values like "007" or
-        # " 7" to bypass the check for user 7, or equal a different integer
-        # through locale-specific string coercion.
+        # Policy engine ownership check with integer coercion defence
         try:
             task_user_id_int = int(user_id)
         except (TypeError, ValueError):
             raise ValueError(f"Invalid user_id value: {user_id!r}")
 
-        if not case or case.user_id != task_user_id_int:
+        if not case:
+            raise ValueError("Case not found")
+
+        user_ctx = UserContext(user_id=task_user_id_int, email="", role="user")
+        decision = evaluate(user_ctx, "case", "view", case)
+        if decision != PolicyDecision.ALLOW:
             raise ValueError("Case not found or not owned by the provided user")
 
         doc = get_case_document_by_id(session, int(document_id))

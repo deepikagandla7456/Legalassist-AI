@@ -76,8 +76,6 @@ from services.case_queries import (
 )
 from db.crud.audit import record_immutable_audit_event
 from core.policy_engine import evaluate, UserContext, PolicyDecision
-from domain.deadline import DeadlineEngine
-from domain.case_lifecycle import CaseLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -1179,4 +1177,11 @@ def validate_case_transition(current_status: str, target_status: str) -> bool:
     Validates if a transition from current case status to target case status 
     is permitted under standard case lifecycle rules.
     """
-    return CaseLifecycle.can_transition(current_status, target_status)
+    # Align status names with CaseStatus db schema values: pending, active, appealed, closed
+    allowed_transitions = {
+        "pending": ["active", "closed"],
+        "active": ["closed", "appealed"],
+        "appealed": ["active", "closed"],
+        "closed": ["active"]
+    }
+    return target_status in allowed_transitions.get(current_status, [])

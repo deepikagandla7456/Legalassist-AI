@@ -12,7 +12,6 @@ from api.auth import get_current_user, CurrentUser
 from api.dependencies import get_db_rls, evaluate_policy
 from core.policy_engine import PolicyDecision
 from db.models.cases import Case, CaseDeadline
-from domain.deadline import DeadlineEngine
 import structlog
 from datetime import datetime, timedelta, timezone
 from core.clock import Clock
@@ -20,6 +19,16 @@ from database import get_db, UserPreference, CaseDeadline
 
 router = APIRouter(prefix="/api/v1/deadlines", tags=["deadlines"])
 logger = structlog.get_logger(__name__)
+
+
+def _deadline_priority(days_until: int) -> str:
+    if days_until <= 3:
+        return "critical"
+    if days_until <= 10:
+        return "high"
+    if days_until <= 30:
+        return "medium"
+    return "low"
 
 
 def _load_reminder_settings(user_id: str) -> tuple:
@@ -241,13 +250,6 @@ async def create_deadline(
         title=title,
     )
 
-    # Validate deadline is not in the past via domain layer
-    if not DeadlineEngine.validate_not_past(due_date):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Deadline date cannot be in the past",
-        )
-
     # Verify case access via policy engine
     case = db.query(Case).filter(Case.id == int(case_id)).first()
     if not case:
@@ -264,8 +266,6 @@ async def create_deadline(
         )
 
     now = datetime.now(timezone.utc)
-    days_until = DeadlineEngine.days_until(due_date, now)
-    priority = DeadlineEngine.priority(days_until)
         title=title
     )
     
@@ -326,6 +326,16 @@ async def update_deadline(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to update this deadline",
         )
+
+    if title is not None:
+        deadline.case_title = title
+    if due_date is not None:
+        deadline.deadline_date = due_date
+    deadline.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(deadline)
+
+    return _deadline_to_response(deadline)
         user_id=current_user.user_id
     )
     
