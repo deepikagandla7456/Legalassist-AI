@@ -880,10 +880,8 @@ def add_manual_deadline(
     
     db = SessionLocal()
     try:
-        # Validate deadline date is not in the past
-        if deadline_date.tzinfo is None:
-            deadline_date = deadline_date.replace(tzinfo=timezone.utc)
-        if deadline_date < datetime.now(timezone.utc):
+        # Validate deadline date is not in the past via domain layer
+        if not DeadlineEngine.validate_not_past(deadline_date):
             return None
 
         # Verify case access via policy engine
@@ -898,7 +896,7 @@ def add_manual_deadline(
             court_name=court_name,
             deadline_date=deadline_date,
             deadline_type=deadline_type,
-            first_action=get_deadline_first_action(deadline_type),
+            first_action=DeadlineEngine.first_action(deadline_type),
             description=description,
         )
         db.add(deadline)

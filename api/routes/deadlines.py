@@ -355,11 +355,19 @@ async def update_deadline(
             CaseDeadline.user_id == int(current_user.user_id)
         ).first()
 
-        if not deadline:
+    if title is not None:
+        deadline.case_title = title
+    if due_date is not None:
+        # Validate via domain layer
+        if not DeadlineEngine.validate_not_past(due_date):
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Deadline not found"
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Deadline date cannot be in the past",
             )
+        deadline.deadline_date = due_date
+    deadline.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(deadline)
 
         if title is not None:
             deadline.case_title = title
