@@ -76,6 +76,15 @@ async def add_correlation_id_middleware(request: Request, call_next: Callable):
     traceparent = incoming_carrier.get("traceparent", "")
     correlation_id = traceparent.split("-")[1] if "-" in traceparent else generate_correlation_id()
 
+
+async def add_correlation_id_middleware(request: Request, call_next: Callable):
+    correlation_id = (
+        request.headers.get("X-Correlation-Id")
+        or request.headers.get("X-Request-Id")
+        or request.headers.get("x-correlation-id")
+        or request.headers.get("x-request-id")
+        or generate_correlation_id()
+    )
     request.state.correlation_id = correlation_id
     request.state.request_id = correlation_id
     request.state.traceparent = traceparent

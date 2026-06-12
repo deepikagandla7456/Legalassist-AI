@@ -1,3 +1,14 @@
+"""GDPR-compliant data deletion service with audit trail.
+
+This module implements a safe, auditable user-data deletion pipeline that:
+1. Exports user data before deletion (with signed manifest)
+2. Redacts PII from primary storage
+3. Updates vector indices and shards
+4. Provides transactional/compensating operations with full audit logging
+
+Reference: Issue #1998
+"""
+
 from __future__ import annotations
 
 import datetime as dt
