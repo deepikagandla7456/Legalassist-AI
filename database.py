@@ -65,9 +65,17 @@ from db.models import (
     CaseArgument,
     KnowledgeGraphEdge,
     PrecedentMatch,
-    IdempotencyKey,
-    IdempotencyKeyStatus,
+    CaseNote,
+    CaseComment,
+    CasePresence,
 )
+from db.crud.comments import (
+    get_case_comments,
+    get_case_presence,
+    create_case_comment,
+    upsert_case_presence,
+)
+from db.case_service import save_case_note_draft
 
 from db.crud.notifications import (
     create_case_deadline,
