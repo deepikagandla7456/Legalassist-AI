@@ -31,7 +31,7 @@ async def get_case_audit_events(
     if current_user.role != "admin" and case.user_id != current_user.user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    events = list_audit_events(db, case_id=case_id, limit=limit)
+    events = list_audit_events(db, case_id=case_id, limit=limit, offset=offset)
     return AuditEventListResponse(
         case_id=case_id,
         total=len(events),

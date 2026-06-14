@@ -30,25 +30,19 @@ from sqlalchemy import (
     create_engine,
     make_url,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from config import Config
-from db.models import CaseNote
-from db.case_service import save_case_note_draft
-from db.attachments_service import create_attachment, get_attachments_for_case
-from db.otp_service import (
-    _otp_rate_limit_key,
-    _get_otp_rate_limit_script,
-    _reserve_otp_rate_limit_slot,
+from db.crud.users import (
+    get_user_by_email,
+    create_user,
+    update_user_last_login,
     create_otp_verification,
     get_pending_otp,
     mark_otp_as_used,
-    cleanup_expired_otps,
-    revoke_token,
-    is_token_revoked,
-    cleanup_expired_revoked_tokens,
+    is_email_locked_out,
     record_otp_failed_attempt,
     reset_otp_failed_attempts,
+    cleanup_expired_otps,
+    create_or_update_user_preference,
 )
 import datetime as dt
 import threading
@@ -474,14 +468,26 @@ def create_user(db: Session, email: str) -> User:
     return user
 
 
-def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
-    """Update a user's last-login timestamp."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if user:
-        user.last_login = dt.datetime.now(dt.timezone.utc)
+# Database initialization
+def init_db():
+    """Create all tables"""
+    Base.metadata.create_all(bind=engine)
+
+def cleanup_expired_revoked_tokens(db: Session, batch_size: int = 1000) -> int:
+    """Delete expired revoked tokens in batches to avoid lock contention."""
+    now = dt.datetime.now(dt.timezone.utc)
+    total_deleted = 0
+
+    while True:
+        deleted = db.query(RevokedToken).filter(
+            RevokedToken.expires_at < now
+        ).limit(batch_size).delete(synchronize_session=False)
         db.commit()
-        db.refresh(user)
-    return user
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
 
 
 def schedule_token_cleanup():
@@ -1112,8 +1118,56 @@ def create_timeline_event(
     return event
 
 
-# create_case_document_secure is deprecated - use create_case_document which already has ownership validation
-create_case_document_secure = create_case_document
+def create_case_document(
+    db: Session,
+    case_id: int,
+    document_type: DocumentType,
+    user_id: int,
+    document_content: Optional[str] = None,
+    file_path: Optional[str] = None,
+    summary: Optional[str] = None,
+    remedies: Optional[dict] = None,
+) -> CaseDocument:
+    """Create a new case document.
+
+    Security: enforce that `case_id` belongs to `user_id` (server-side ownership
+    validation), consistent with create_case_deadline.
+    """
+    try:
+        normalized_case_id = int(case_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("case_id must be an integer matching cases.id") from exc
+
+    # Ownership validation (prevents attaching documents to another user's case)
+    case = db.query(Case).filter(Case.id == normalized_case_id).first()
+    if not case or case.user_id != user_id:
+        raise PermissionError(
+            "case_id not found or not owned by the provided user_id"
+        )
+
+    doc = CaseDocument(
+        case_id=normalized_case_id,
+        document_type=document_type,
+        document_content=document_content,
+        file_path=file_path,
+        summary=summary,
+        remedies=remedies,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    try:
+        from core.embedding_engine import get_embedding_engine, get_vector_store
+        import json
+        engine = get_embedding_engine()
+        emb_obj = engine.embed_case(db, normalized_case_id, force_regenerate=True)
+        if emb_obj:
+            vec = json.loads(emb_obj.embedding_vector)
+            vs = get_vector_store()
+            vs.add_batch([(normalized_case_id, vec)])
+    except Exception as ev:
+        logger.warning(f"Failed to auto-synchronize vector store on document creation: {ev}")
+    return doc
 
 
 def get_case_documents(db: Session, case_id: int) -> List[CaseDocument]:
@@ -1296,12 +1350,12 @@ def cleanup_expired_revoked_tokens(db: Session) -> int:
 
 def submit_similarity_feedback(
     db: Session,
-    user_id: str,
+    user_id: int | str,
     candidate_case_id: int,
     query_signature: str,
     relevance: bool,
 ) -> SimilarityFeedback:
-    """Persist feedback for a similarity search result"""
+    """Submit similarity feedback for search queries."""
     feedback = SimilarityFeedback(
         user_id=str(user_id),
         candidate_case_id=candidate_case_id,
@@ -1331,109 +1385,68 @@ def get_similarity_feedback(
     if candidate_case_id is not None:
         query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
 
-def create_case_comment(
-    db: Session,
-    case_id: int,
-    user_id: int,
-    comment_text: str,
-    parent_comment_id: Optional[int] = None,
-) -> CaseComment:
-    """Create a threaded collaboration comment for a case."""
-    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
-    if not case:
-        raise PermissionError("case_id not found or not owned by the provided user_id")
+    return query.order_by(SimilarityFeedback.created_at.desc()).limit(limit).all()
 
-    if parent_comment_id is not None:
-        parent_comment = db.query(CaseComment).filter(
-            CaseComment.id == parent_comment_id,
-            CaseComment.case_id == case_id,
-        ).first()
-        if not parent_comment:
-            raise ValueError("parent_comment_id is invalid for this case")
 
-    text = (comment_text or "").strip()
-    if not text:
-        raise ValueError("comment_text cannot be empty")
-
-    comment = CaseComment(
-        case_id=case_id,
-        user_id=user_id,
-        parent_comment_id=parent_comment_id,
-        comment_text=text,
+def reserve_idempotency_key(db: Session, key: str, method: str, path: str) -> tuple[IdempotencyKey, bool]:
+    """Reserve an idempotency key within a nested transaction/savepoint."""
+    from sqlalchemy.exc import IntegrityError
+    ik = IdempotencyKey(
+        key=key,
+        method=method,
+        path=path,
+        status=IdempotencyKeyStatus.IN_PROGRESS,
     )
-    db.add(comment)
+    try:
+        with db.begin_nested():
+            db.add(ik)
+        db.commit()
+        db.refresh(ik)
+        return ik, True
+    except IntegrityError:
+        existing = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+        return existing, False
+
+
+def set_idempotency_response(db: Session, key: str, status_code: int, headers: dict, body: str) -> IdempotencyKey:
+    """Set the response payload for a completed idempotency key."""
+    from sqlalchemy.exc import IntegrityError
+    ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+    if not ik:
+        try:
+            ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
+            with db.begin_nested():
+                db.add(ik)
+            db.commit()
+        except IntegrityError:
+            ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
+            if not ik:
+                ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
+                db.add(ik)
+                db.commit()
+    ik.status = IdempotencyKeyStatus.COMPLETED
+    ik.response_status = status_code
+    ik.response_headers = headers
+    ik.response_body = body
+    ik.completed_at = dt.datetime.now(dt.timezone.utc)
     db.commit()
-    db.refresh(comment)
-
-    create_timeline_event(
-        db=db,
-        case_id=case_id,
-        event_type="comment_replied" if parent_comment_id else "comment_added",
-        description=text[:240],
-        metadata={
-            "comment_id": comment.id,
-            "parent_comment_id": parent_comment_id,
-        },
-    )
-    return comment
+    db.refresh(ik)
+    return ik
 
 
-def get_case_comments(db: Session, case_id: int) -> List[CaseComment]:
-    """Get threaded case comments ordered by creation time."""
-    return db.query(CaseComment).filter(
-        CaseComment.case_id == case_id
-    ).order_by(CaseComment.created_at.asc()).all()
-
-
-def upsert_case_presence(
-    db: Session,
-    case_id: int,
-    user_id: int,
-    active_view: Optional[str] = None,
-    cursor_anchor: Optional[str] = None,
-) -> CasePresence:
-    """Mark a collaborator as recently active on a case."""
-    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
-    if not case:
-        raise PermissionError("case_id not found or not owned by the provided user_id")
-
-    presence = db.query(CasePresence).filter(
-        CasePresence.case_id == case_id,
-        CasePresence.user_id == user_id,
+def get_idempotency_response(db: Session, key: str) -> Optional[dict]:
+    """Retrieve the cached response for a completed idempotency key."""
+    ik = db.query(IdempotencyKey).filter(
+        IdempotencyKey.key == key,
+        IdempotencyKey.status == IdempotencyKeyStatus.COMPLETED
     ).first()
-
-    now = dt.datetime.now(dt.timezone.utc)
-    if presence:
-        presence.active_view = active_view
-        presence.cursor_anchor = cursor_anchor
-        presence.last_seen = now
-    else:
-        presence = CasePresence(
-            case_id=case_id,
-            user_id=user_id,
-            active_view=active_view,
-            cursor_anchor=cursor_anchor,
-            last_seen=now,
-        )
-        db.add(presence)
-
-    db.commit()
-    db.refresh(presence)
-    return presence
-
-
-def get_case_presence(db: Session, case_id: int, active_window_minutes: int = 5) -> List[CasePresence]:
-    """Return collaborators active within a recent time window."""
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=active_window_minutes)
-    return db.query(CasePresence).filter(
-        CasePresence.case_id == case_id,
-        CasePresence.last_seen >= cutoff,
-    ).order_by(CasePresence.last_seen.desc()).all()
-
-
-def get_user_stats(db: Session, user_id: int) -> dict:
-    """Get statistics for a user's cases"""
-    cases = get_user_cases(db, user_id)
+    if ik:
+        return {
+            "status_code": ik.response_status,
+            "headers": ik.response_headers,
+            "body": ik.response_body,
+        }
+    return None
 
 
 
