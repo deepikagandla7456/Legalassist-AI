@@ -185,6 +185,7 @@ async def get_deadline_details(
 @router.post(
     "",
     response_model=DeadlineResponse,
+    status_code=status.HTTP_201_CREATED,
     summary="Create new deadline"
 )
 async def create_deadline(
