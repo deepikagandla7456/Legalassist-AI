@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 from io import StringIO
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
 from sqlalchemy.orm import Session
 
 from api.auth import CurrentUser, get_current_user, get_admin_user
@@ -20,7 +20,8 @@ router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 @router.get("/cases/{case_id}", response_model=AuditEventListResponse, summary="View audit events for a case")
 async def get_case_audit_events(
     case_id: int,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of audit events to return (1–500)"),
+    offset: int = Query(default=0, ge=0, description="Number of audit events to skip"),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> AuditEventListResponse:
@@ -30,7 +31,7 @@ async def get_case_audit_events(
     if current_user.role != "admin" and case.user_id != current_user.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    events = list_audit_events(db, case_id=case_id, limit=limit)
+    events = list_audit_events(db, case_id=case_id, limit=limit, offset=offset)
     return AuditEventListResponse(
         case_id=case_id,
         total=len(events),
