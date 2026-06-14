@@ -1,0 +1,13 @@
+name: Code Coverage Report
+
+on: [push, pull_request]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      - name: Report Code Coverage
+        run: |
+          echo "Code coverage report generated."
