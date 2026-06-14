@@ -814,8 +814,11 @@ def update_user_last_login(db: Session, user_id: int) -> User:
     if user:
         user.last_login = dt.datetime.now(dt.timezone.utc)
         db.commit()
-        db.refresh(user)
-    return user
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
 
 
 # Thread lock for OTP rate-limit enforcement (single source of truth).
@@ -872,8 +875,16 @@ def mark_otp_as_used(db: Session, otp_id: int) -> bool:
     if otp:
         otp.is_used = True
         db.commit()
+        try:
+            from core.embedding_engine import get_vector_store
+            vs = get_vector_store()
+            vs.delete(case_id)
+        except Exception as ev:
+            logger.warning(f"Failed to auto-invalidate vector store on case deletion: {ev}")
         return True
-    return False
+    except Exception:
+        db.rollback()
+        raise
 
 
 

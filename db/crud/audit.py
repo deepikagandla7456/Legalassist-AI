@@ -162,13 +162,14 @@ def list_audit_events(
     case_id: Optional[int] = None,
     actor_user_id: Optional[int] = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> List[AuditEvent]:
     query = db.query(AuditEvent)
     if case_id is not None:
         query = query.filter(AuditEvent.case_id == case_id)
     if actor_user_id is not None:
         query = query.filter(AuditEvent.actor_user_id == actor_user_id)
-    return query.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit).all()
+    return query.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).offset(offset).limit(limit).all()
 
 
 def audit_events_to_csv(events: Iterable[AuditEvent]) -> bytes:
