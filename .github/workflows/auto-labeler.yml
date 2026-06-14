@@ -1,0 +1,27 @@
+name: Auto Issue Labeler
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto Label Issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = github.context.payload.issue;
+            const labels = [];
+            if (issue.title.toLowerCase().includes('bug')) {
+              labels.push('bug');
+            }
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: github.context.repo.owner,
+                repo: github.context.repo.repo,
+                issue_number: issue.number,
+                labels: labels
+              });
+            }
