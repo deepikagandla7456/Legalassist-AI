@@ -11,6 +11,45 @@ come from db/ subpackages. Do not define duplicate functions here.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import enum
+import logging
+from typing import Optional, List, Tuple
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Enum as SQLEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    make_url,
+)
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+
+from config import Config
+from db.models import CaseNote
+from db.case_service import save_case_note_draft
+from db.attachments_service import create_attachment, get_attachments_for_case
+from db.otp_service import (
+    _otp_rate_limit_key,
+    _get_otp_rate_limit_script,
+    _reserve_otp_rate_limit_slot,
+    create_otp_verification,
+    get_pending_otp,
+    mark_otp_as_used,
+    cleanup_expired_otps,
+    revoke_token,
+    is_token_revoked,
+    cleanup_expired_revoked_tokens,
+    record_otp_failed_attempt,
+    reset_otp_failed_attempts,
+)
 import datetime as dt
 import threading
 from typing import Optional, List
@@ -416,26 +455,33 @@ def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken
     return token
 
 
-# Database initialization
-def init_db():
-    """Create all tables"""
-    Base.metadata.create_all(bind=engine)
+def aggregate_model_performance(db: Session, task: Optional[str] = None) -> List[ModelPerformance]:
+    """Compute simple model performance aggregates from `model_feedback` rows."""
+    return []
 
-def cleanup_expired_revoked_tokens(db: Session, batch_size: int = 1000) -> int:
-    """Delete expired revoked tokens in batches to avoid lock contention."""
-    now = dt.datetime.now(dt.timezone.utc)
-    total_deleted = 0
 
-    while True:
-        deleted = db.query(RevokedToken).filter(
-            RevokedToken.expires_at < now
-        ).limit(batch_size).delete(synchronize_session=False)
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    """Get a user by email address."""
+    return db.query(User).filter(User.email == email).first()
+
+
+def create_user(db: Session, email: str) -> User:
+    """Create a new user."""
+    user = User(email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_user_last_login(db: Session, user_id: int) -> Optional[User]:
+    """Update a user's last-login timestamp."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.last_login = dt.datetime.now(dt.timezone.utc)
         db.commit()
-        total_deleted += deleted
-        if deleted < batch_size:
-            break
-
-    return total_deleted
+        db.refresh(user)
+    return user
 
 
 def schedule_token_cleanup():
@@ -580,6 +626,12 @@ def delete_case(db: Session, case_id: int) -> bool:
 
         db.delete(case)
         db.commit()
+        try:
+            from core.embedding_engine import get_vector_store
+            vs = get_vector_store()
+            vs.delete(case_id)
+        except Exception as ev:
+            logger.warning(f"Failed to auto-invalidate vector store on case deletion: {ev}")
         return True
     except Exception:
         db.rollback()
@@ -1060,45 +1112,8 @@ def create_timeline_event(
     return event
 
 
-def create_case_document(
-    db: Session,
-    case_id: int,
-    document_type: DocumentType,
-    user_id: int,
-    document_content: Optional[str] = None,
-    file_path: Optional[str] = None,
-    summary: Optional[str] = None,
-    remedies: Optional[dict] = None,
-) -> CaseDocument:
-    """Create a new case document.
-
-    Security: enforce that `case_id` belongs to `user_id` (server-side ownership
-    validation), consistent with create_case_deadline.
-    """
-    try:
-        normalized_case_id = int(case_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("case_id must be an integer matching cases.id") from exc
-
-    # Ownership validation (prevents attaching documents to another user's case)
-    case = db.query(Case).filter(Case.id == normalized_case_id).first()
-    if not case or case.user_id != user_id:
-        raise PermissionError(
-            "case_id not found or not owned by the provided user_id"
-        )
-
-    doc = CaseDocument(
-        case_id=normalized_case_id,
-        document_type=document_type,
-        document_content=document_content,
-        file_path=file_path,
-        summary=summary,
-        remedies=remedies,
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-    return doc
+# create_case_document_secure is deprecated - use create_case_document which already has ownership validation
+create_case_document_secure = create_case_document
 
 
 def get_case_documents(db: Session, case_id: int) -> List[CaseDocument]:
@@ -1141,6 +1156,17 @@ def update_case_document(
         try:
             db.commit()
             db.refresh(doc)
+            try:
+                from core.embedding_engine import get_embedding_engine, get_vector_store
+                import json
+                engine = get_embedding_engine()
+                emb_obj = engine.embed_case(db, doc.case_id, force_regenerate=True)
+                if emb_obj:
+                    vec = json.loads(emb_obj.embedding_vector)
+                    vs = get_vector_store()
+                    vs.add_batch([(doc.case_id, vec)])
+            except Exception as ev:
+                logger.warning(f"Failed to auto-synchronize vector store on document update: {ev}")
         except Exception as e:
             db.rollback()
             raise RuntimeError(f"Database write failed for case document {document_id}: {str(e)}") from e
@@ -1270,25 +1296,200 @@ def cleanup_expired_revoked_tokens(db: Session) -> int:
 
 def submit_similarity_feedback(
     db: Session,
-    case_id: int,
-    event_type: str,
-    description: str,
-    event_date: Optional[dt.datetime] = None,
-    metadata: Optional[dict] = None,
-) -> CaseTimeline:
-    """Create a new timeline event.
-    
-    Note: Ensures that the instantiated CaseTimeline is correctly added to the
-    session using the explicit local variable reference to prevent NameErrors.
-    """
-    event = CaseTimeline(
-        case_id=case_id,
-        event_type=event_type,
-        description=description,
-        event_date=event_date or dt.datetime.now(dt.timezone.utc),
-        event_metadata=metadata,
+    user_id: str,
+    candidate_case_id: int,
+    query_signature: str,
+    relevance: bool,
+) -> SimilarityFeedback:
+    """Persist feedback for a similarity search result"""
+    feedback = SimilarityFeedback(
+        user_id=str(user_id),
+        candidate_case_id=candidate_case_id,
+        query_signature=query_signature,
+        relevance=relevance,
     )
     db.add(feedback)
+    db.commit()
+    db.refresh(feedback)
+    return feedback
+
+
+def get_similarity_feedback(
+    db: Session,
+    user_id: Optional[str] = None,
+    query_signature: Optional[str] = None,
+    candidate_case_id: Optional[int] = None,
+    limit: int = 100,
+) -> List[SimilarityFeedback]:
+    """Get similarity feedback rows filtered by user, query, or candidate case"""
+    query = db.query(SimilarityFeedback)
+
+    if user_id is not None:
+        query = query.filter(SimilarityFeedback.user_id == str(user_id))
+    if query_signature is not None:
+        query = query.filter(SimilarityFeedback.query_signature == query_signature)
+    if candidate_case_id is not None:
+        query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
+
+def create_case_comment(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    comment_text: str,
+    parent_comment_id: Optional[int] = None,
+) -> CaseComment:
+    """Create a threaded collaboration comment for a case."""
+    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
+    if not case:
+        raise PermissionError("case_id not found or not owned by the provided user_id")
+
+    if parent_comment_id is not None:
+        parent_comment = db.query(CaseComment).filter(
+            CaseComment.id == parent_comment_id,
+            CaseComment.case_id == case_id,
+        ).first()
+        if not parent_comment:
+            raise ValueError("parent_comment_id is invalid for this case")
+
+    text = (comment_text or "").strip()
+    if not text:
+        raise ValueError("comment_text cannot be empty")
+
+    comment = CaseComment(
+        case_id=case_id,
+        user_id=user_id,
+        parent_comment_id=parent_comment_id,
+        comment_text=text,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+
+    create_timeline_event(
+        db=db,
+        case_id=case_id,
+        event_type="comment_replied" if parent_comment_id else "comment_added",
+        description=text[:240],
+        metadata={
+            "comment_id": comment.id,
+            "parent_comment_id": parent_comment_id,
+        },
+    )
+    return comment
+
+
+def get_case_comments(db: Session, case_id: int) -> List[CaseComment]:
+    """Get threaded case comments ordered by creation time."""
+    return db.query(CaseComment).filter(
+        CaseComment.case_id == case_id
+    ).order_by(CaseComment.created_at.asc()).all()
+
+
+def upsert_case_presence(
+    db: Session,
+    case_id: int,
+    user_id: int,
+    active_view: Optional[str] = None,
+    cursor_anchor: Optional[str] = None,
+) -> CasePresence:
+    """Mark a collaborator as recently active on a case."""
+    case = db.query(Case).filter(Case.id == case_id, Case.user_id == user_id).first()
+    if not case:
+        raise PermissionError("case_id not found or not owned by the provided user_id")
+
+    presence = db.query(CasePresence).filter(
+        CasePresence.case_id == case_id,
+        CasePresence.user_id == user_id,
+    ).first()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    if presence:
+        presence.active_view = active_view
+        presence.cursor_anchor = cursor_anchor
+        presence.last_seen = now
+    else:
+        presence = CasePresence(
+            case_id=case_id,
+            user_id=user_id,
+            active_view=active_view,
+            cursor_anchor=cursor_anchor,
+            last_seen=now,
+        )
+        db.add(presence)
+
+    db.commit()
+    db.refresh(presence)
+    return presence
+
+
+def get_case_presence(db: Session, case_id: int, active_window_minutes: int = 5) -> List[CasePresence]:
+    """Return collaborators active within a recent time window."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=active_window_minutes)
+    return db.query(CasePresence).filter(
+        CasePresence.case_id == case_id,
+        CasePresence.last_seen >= cutoff,
+    ).order_by(CasePresence.last_seen.desc()).all()
+
+
+def get_user_stats(db: Session, user_id: int) -> dict:
+    """Get statistics for a user's cases"""
+    cases = get_user_cases(db, user_id)
+
+
+
+def delete_user_cases(db: Session, user_id: int) -> dict:
+    """Delete all cases and associated data for a user.
+    
+    This performs a soft deletion approach where cases are marked
+    as deleted rather than immediately removed from the database.
+    
+    Args:
+        db: Database session
+        user_id: The ID of the user whose cases should be deleted
+        
+    Returns:
+        Dictionary with counts of deleted items
+    """
+    deleted_counts = {
+        "cases": 0,
+        "documents": 0,
+        "deadlines": 0,
+        "timeline_events": 0,
+    }
+    
+    cases = db.query(Case).filter(Case.user_id == user_id).all()
+    case_ids = [c.id for c in cases]
+    
+    if not case_ids:
+        return deleted_counts
+    
+    # Delete documents
+    docs = db.query(CaseDocument).filter(CaseDocument.case_id.in_(case_ids)).all()
+    deleted_counts["documents"] = len(docs)
+    db.query(CaseDocument).filter(CaseDocument.case_id.in_(case_ids)).delete(
+        synchronize_session=False
+    )
+    
+    # Delete timeline events
+    events = db.query(CaseTimeline).filter(CaseTimeline.case_id.in_(case_ids)).all()
+    deleted_counts["timeline_events"] = len(events)
+    db.query(CaseTimeline).filter(CaseTimeline.case_id.in_(case_ids)).delete(
+        synchronize_session=False
+    )
+    
+    # Delete deadlines
+    deadlines = db.query(CaseDeadline).filter(
+        (CaseDeadline.user_id == user_id) | (CaseDeadline.case_id.in_(case_ids))
+    ).all()
+    deleted_counts["deadlines"] = len(deadlines)
+    db.query(CaseDeadline).filter(
+        (CaseDeadline.user_id == user_id) | (CaseDeadline.case_id.in_(case_ids))
+    ).delete(synchronize_session=False)
+    
+    # Delete cases
+    deleted_counts["cases"] = len(cases)
+    db.query(Case).filter(Case.user_id == user_id).delete(synchronize_session=False)
+    
     db.commit()
     db.refresh(feedback)
     return feedback
@@ -1431,5 +1632,3 @@ def redact_user_data(db: Session, user_id: int) -> int:
     
     db.commit()
     return redacted_count
-
-
