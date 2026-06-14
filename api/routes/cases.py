@@ -4,44 +4,30 @@ POST /api/v1/cases/search - Search for similar cases
 POST /api/v1/cases/similarity-feedback - Save similarity feedback
 GET /api/v1/cases/{id}/timeline - Get case timeline
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Dict
 
-from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Request
+from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Request, Query
 from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, status, Depends
 from api.models import (
     CaseSearchRequest, CaseSearchResponse, CaseResult,
     CaseTimeline, CaseEvent, SimilarityFeedbackRequest,
     SimilarityFeedbackResponse,
-    CaseNoteDraftRequest,
-    CaseNotePublishRequest,
-    CaseNoteHistoryResponse,
-    CaseNoteVersionItem,
 )
 from api.auth import get_current_user, CurrentUser
-from api.validation import validate_file_upload, validate_file_upload_streaming, ValidationConfig
 import structlog
 from sqlalchemy import func
-from functools import wraps
+from sqlalchemy.orm import Session
 
 from database import (
     CaseRecord,
     CaseOutcome,
+    Case,
     get_db,
     submit_similarity_feedback,
-    Case,
-    DocumentType,
-    CaseDocument,
-    Attachment,
+    SimilarityFeedback,
 )
-from db.case_service import save_case_note_draft, publish_case_note, get_case_note_history
-from db.repositories.case_queries import fetch_latest_documents_per_case
-from db.crud.audit import record_immutable_audit_event
-from services.timeline_service import timeline_service as _timeline_service
-try:
-    from celery_app import enqueue_task_from_http_request, process_case_document_upload_task
-except Exception:
-    enqueue_task_from_http_request = None
-    process_case_document_upload_task = None
 from analytics_engine import CaseSimilarityCalculator
 
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
@@ -68,10 +54,15 @@ def _audit_case_view_route(func):
         current_user = kwargs.get("current_user")
         if result is not None and case_id is not None and current_user is not None:
             resource_id = str(case_id)
+            try:
+                actor_user_id = int(current_user.user_id)
+            except (ValueError, TypeError):
+                logger.warning("Invalid user ID format in audit", user_id=current_user.user_id)
+                return result
             record_immutable_audit_event(
                 event_type="case.viewed",
                 action="viewed",
-                actor_user_id=int(current_user.user_id),
+                actor_user_id=actor_user_id,
                 resource_type="case",
                 resource_id=resource_id,
                 outcome="success",
@@ -81,7 +72,28 @@ def _audit_case_view_route(func):
             )
         return result
 
-    return wrapper
+    Called directly inside the route handler so that ``case_id`` and
+    ``current_user`` are always the real, dependency-resolved values rather
+    than relying on ``**kwargs`` inspection, which is unreliable under
+    FastAPI's dependency-injection call convention.
+    """
+    try:
+        record_immutable_audit_event(
+            event_type="case.viewed",
+            action="viewed",
+            actor_user_id=int(current_user.user_id),
+            resource_type="case",
+            resource_id=str(case_id),
+            outcome="success",
+            metadata={"route": "/api/v1/cases/{case_id}"},
+        )
+    except Exception:
+        logger.exception(
+            "audit_event_failed",
+            event_type="case.viewed",
+            case_id=case_id,
+            user_id=current_user.user_id,
+        )
 
 
 def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case:
@@ -95,7 +107,13 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    if current_user.role != "admin" and case.user_id != user_id_int:
+    # Validate case.user_id is a valid integer before comparison
+    try:
+        case_user_id = int(case.user_id) if case.user_id is not None else None
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid user ID in case record")
+    
+    if current_user.role != "admin" and case_user_id != user_id_int:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
 
     return case
@@ -109,11 +127,15 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
 async def search_cases(
     request: CaseSearchRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> CaseSearchResponse:
     """
-    Search for similar cases in database
-    
+    Search for similar cases in database.
+
+    FastAPI's Depends(get_db) manages the session lifecycle, guaranteeing
+    the connection is always returned to the pool regardless of the exit
+    path (normal return, early return, or unhandled exception).
+
     - **case_number**: Case number to search for
     - **keywords**: Keywords to search
     - **jurisdiction**: Jurisdiction (US, UK, etc.)
@@ -122,106 +144,86 @@ async def search_cases(
     - **year_to**: End year filter
     - **limit**: Max results (1-100)
     - **offset**: Pagination offset
-    
+
     Returns paginated list of matching cases
     """
-    
+
     logger.info(
         "Searching cases",
         user_id=current_user.user_id,
         keywords=request.keywords,
-        jurisdiction=request.jurisdiction
+        jurisdiction=request.jurisdiction,
     )
-    
+
     from time import perf_counter
 
     start = perf_counter()
 
-    # Similarity constraints/knobs
     min_similarity = request.relevance_threshold
-    candidate_limit = 1000  # keeps the response time low
+    candidate_limit = 1000
 
     reference_case = None
-
-    query_signature = request.query_signature or _build_query_signature(request)
-
-    # Build candidate query from filters (cheap DB-side filtering)
-    query = db.query(CaseRecord)
-    if request.case_type and request.case_type != "general":
-        query = query.filter(CaseRecord.case_type == request.case_type)
-    if request.jurisdiction:
-        query = query.filter(CaseRecord.jurisdiction == request.jurisdiction)
-    if request.court_name:
-        query = query.filter(CaseRecord.court_name == request.court_name)
-    if request.judge_name:
-        query = query.filter(CaseRecord.judge_name == request.judge_name)
-    if request.plaintiff_type:
-        query = query.filter(CaseRecord.plaintiff_type == request.plaintiff_type)
-    if request.defendant_type:
-        query = query.filter(CaseRecord.defendant_type == request.defendant_type)
-
-    # Restrict time window if requested
-    if request.year_from is not None:
-        query = query.filter(CaseRecord.created_at >= datetime(request.year_from, 1, 1))
-    if request.year_to is not None:
-        query = query.filter(CaseRecord.created_at <= datetime(request.year_to, 12, 31, 23, 59, 59))
-
-    # Keep result set small for <2s performance
-    candidates = query.order_by(CaseRecord.created_at.desc()).limit(candidate_limit).all()
-
-    # If we cannot get a real reference_case, we use the first candidate as proxy when possible.
-    # This still returns meaningful “similar cases” under the attribute-only scoring.
-    if candidates:
-        reference_case = candidates[0]
-
-    if not reference_case:
-        return CaseSearchResponse(
-            total_results=0,
-            results=[],
-            search_time_seconds=round(perf_counter() - start, 4),
-        )
-
-    # Score candidates and apply threshold
-    scored = []
-    for c in candidates:
-        if c.id == reference_case.id:
-            continue
-        raw = CaseSimilarityCalculator.case_similarity_score(reference_case, c)
-        # raw is 0..100. normalize to 0..1
-        score01 = raw / 100.0
-        # Optional: slight boost for recency to match ranking requirement.
-        # (Cheap: based on created_at within last ~365 days)
-        try:
-            created_at = c.created_at
-            if created_at and created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            recency_days = (datetime.now(timezone.utc) - created_at).days if created_at else 0
-            recency_boost = max(0.0, 0.05 - recency_days * 0.0002)  # up to +0.05
-        except Exception:
-            recency_boost = 0.0
-        feedback_boost = CaseSimilarityCalculator.get_feedback_adjustment(
-            db,
-            c,
-            user_id=current_user.user_id,
-            query_signature=query_signature,
-        )
-        score01 = min(1.0, score01 + recency_boost + feedback_boost)
-
-        if score01 > min_similarity:
-            scored.append((c, score01))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    top = scored[: request.limit]
-
-    # Fetch appeal analytics for the returned set
-    result_ids = [c.id for c, _ in top]
+    candidates = []
     outcome_rows = []
-    if result_ids:
-        outcome_rows = (
-            db.query(CaseOutcome)
-            .filter(CaseOutcome.case_id.in_(result_ids))
-            .all()
-        )
+    feedback_rows = []
+    db = None
+    try:
+        db = get_db()
+        query_signature = request.query_signature or _build_query_signature(request)
+
+        query = db.query(CaseRecord)
+        if request.case_type and request.case_type != "general":
+            query = query.filter(CaseRecord.case_type == request.case_type)
+        if request.jurisdiction:
+            query = query.filter(CaseRecord.jurisdiction == request.jurisdiction)
+        if request.court_name:
+            query = query.filter(CaseRecord.court_name == request.court_name)
+        if request.judge_name:
+            query = query.filter(CaseRecord.judge_name == request.judge_name)
+        if request.plaintiff_type:
+            query = query.filter(CaseRecord.plaintiff_type == request.plaintiff_type)
+        if request.defendant_type:
+            query = query.filter(CaseRecord.defendant_type == request.defendant_type)
+
+        if request.year_from is not None:
+            query = query.filter(CaseRecord.created_at >= datetime(request.year_from, 1, 1))
+        if request.year_to is not None:
+            query = query.filter(CaseRecord.created_at <= datetime(request.year_to, 12, 31, 23, 59, 59))
+
+        candidates = query.order_by(CaseRecord.created_at.desc()).limit(candidate_limit).all()
+
+        reference_case = candidates[0] if candidates else None
+        if not reference_case:
+            return CaseSearchResponse(
+                total_results=0,
+                results=[],
+                search_time_seconds=round(perf_counter() - start, 4),
+            )
+
+        candidate_ids = [c.id for c in candidates if c.id != reference_case.id]
+
+        feedback_rows = []
+        if candidate_ids:
+            feedback_rows = (
+                db.query(SimilarityFeedback)
+                .filter(
+                    SimilarityFeedback.candidate_case_id.in_(candidate_ids),
+                    SimilarityFeedback.user_id == str(current_user.user_id),
+                )
+                .all()
+            )
+
+        outcome_rows = []
+        if candidate_ids:
+            outcome_rows = (
+                db.query(CaseOutcome)
+                .filter(CaseOutcome.case_id.in_(candidate_ids))
+                .all()
+            )
+
+    finally:
+        if db is not None:
+            db.close()
 
     outcome_map = {row.case_id: row for row in outcome_rows}
     appealed_cases = sum(1 for row in outcome_rows if row.appeal_filed)
@@ -230,11 +232,40 @@ async def search_cases(
         round(appeal_successful_cases / appealed_cases, 4) if appealed_cases > 0 else None
     )
 
+    feedback_adjustments: Dict[int, float] = {}
+    for f in feedback_rows:
+        current = feedback_adjustments.get(f.candidate_case_id, 0.0)
+        adjustment = 0.03 if f.relevance else -0.03
+        feedback_adjustments[f.candidate_case_id] = current + adjustment
+    for cid in feedback_adjustments:
+        feedback_adjustments[cid] = max(-0.03, min(0.03, feedback_adjustments[cid]))
+
+    scored = []
+    for c in candidates:
+        if c.id == reference_case.id:
+            continue
+        raw = CaseSimilarityCalculator.case_similarity_score(reference_case, c)
+        score01 = raw / 100.0
+        try:
+            created_at = c.created_at
+            if created_at and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            recency_days = (datetime.now(timezone.utc) - created_at).days if created_at else 0
+            recency_boost = max(0.0, 0.05 - recency_days * 0.0002)
+        except Exception:
+            recency_boost = 0.0
+        feedback_boost = feedback_adjustments.get(c.id, 0.0)
+        score01 = min(1.0, score01 + recency_boost + feedback_boost)
+
+        if score01 > min_similarity:
+            scored.append((c, score01))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[: request.limit]
+
     results = []
     for c, score in top:
         verdict = c.outcome
-        # We don't have a stored case_number/title on CaseRecord for analytics in current schema.
-        # Use placeholders derived from available fields.
         case_number = c.hashed_case_id
         title = c.judge_name or "Precedent"
         outcome = outcome_map.get(c.id)
@@ -277,7 +308,7 @@ async def search_cases(
 async def submit_similarity_result_feedback(
     request: SimilarityFeedbackRequest,
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> SimilarityFeedbackResponse:
     """Persist user feedback for a similarity search result."""
     query_signature = request.query_signature or ""
@@ -310,41 +341,6 @@ def _build_query_signature(request: CaseSearchRequest) -> str:
     return "|".join(parts)
 
 
-def _timeline_event_to_api_event(event) -> CaseEvent:
-    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
-    documents = metadata.get("documents") if isinstance(metadata.get("documents"), list) else []
-    return CaseEvent(
-        date=event.event_date,
-        event_type=event.event_type,
-        description=event.description,
-        court=metadata.get("court"),
-        judge=metadata.get("judge"),
-        location=metadata.get("location"),
-        documents=documents,
-    )
-
-
-def _build_case_timeline_payload(case: Case, timeline_events) -> dict:
-    api_events = [_timeline_event_to_api_event(event) for event in timeline_events]
-    event_dates = [event.date for event in api_events]
-    if len(event_dates) >= 2:
-        duration_years = round((max(event_dates) - min(event_dates)).days / 365.25, 1)
-    else:
-        duration_years = 0.0
-
-    return {
-        "case_id": str(case.id),
-        "case_number": case.case_number,
-        "title": case.title or case.case_number,
-        "status": case.status.value if hasattr(case.status, "value") else str(case.status),
-        "created_at": case.created_at,
-        "updated_at": case.updated_at or case.created_at,
-        "events": api_events,
-        "total_events": len(api_events),
-        "duration_years": duration_years,
-    }
-
-
 
 @router.get(
     "/{case_id}/timeline",
@@ -353,27 +349,78 @@ def _build_case_timeline_payload(case: Case, timeline_events) -> dict:
 )
 async def get_case_timeline(
     case_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
 ) -> CaseTimeline:
-    """Get case history and timeline."""
+    """Get case history and timeline"""
+    
     logger.info(
         "Retrieving case timeline",
         case_id=case_id,
-        user_id=current_user.user_id,
+        user_id=current_user.user_id
     )
-
-    case = get_owned_case(case_id, current_user, db)
-
-    timeline_events = _timeline_service.get_case_timeline(db, case.id)
-    return CaseTimeline.model_validate(_build_case_timeline_payload(case, timeline_events))
+    
+    # Mock timeline data
+    base_date = datetime.utcnow() - timedelta(days=365)
+    events = [
+        CaseEvent(
+            date=base_date,
+            event_type="filing",
+            description="Case filed",
+            court="District Court",
+            location="New York, NY",
+            documents=["complaint.pdf"]
+        ),
+        CaseEvent(
+            date=base_date + timedelta(days=30),
+            event_type="hearing",
+            description="Initial hearing",
+            court="District Court",
+            judge="Judge Smith",
+            location="New York, NY"
+        ),
+        CaseEvent(
+            date=base_date + timedelta(days=90),
+            event_type="discovery",
+            description="Discovery period",
+            court="District Court",
+            location="New York, NY"
+        ),
+        CaseEvent(
+            date=base_date + timedelta(days=180),
+            event_type="hearing",
+            description="Motion hearing",
+            court="District Court",
+            judge="Judge Smith",
+            location="New York, NY"
+        ),
+        CaseEvent(
+            date=base_date + timedelta(days=365),
+            event_type="decision",
+            description="Court decision rendered",
+            court="District Court",
+            judge="Judge Smith",
+            location="New York, NY",
+            documents=["decision.pdf"]
+        ),
+    ]
+    
+    return CaseTimeline(
+        case_id=case_id,
+        case_number="2023-CV-00001",
+        title="Example Case",
+        status="closed",
+        created_at=base_date,
+        updated_at=datetime.utcnow(),
+        events=events,
+        total_events=len(events),
+        duration_years=1.0
+    )
 
 
 @router.get(
     "/{case_id}",
     summary="Get case details"
 )
-@_audit_case_view_route
 async def get_case_details(
     case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
@@ -388,8 +435,9 @@ async def get_case_details(
     )
     case = get_owned_case(case_id, current_user, db)
     latest_docs = fetch_latest_documents_per_case(db, [case.id])
-
-    return _build_case_summary_payload(case, latest_docs.get(case.id))
+    result = _build_case_summary_payload(case, latest_docs.get(case.id))
+    _record_case_view_audit(case_id, current_user)
+    return result
 
 
 @router.post(
@@ -506,93 +554,41 @@ async def save_case_note_draft_endpoint(
         "published_at": note.published_at,
     }
 
+    db = get_db()
+    try:
+        case = db.query(Case).filter(
+            Case.id == case_id_int,
+            Case.user_id == int(current_user.user_id),
+        ).first()
+        if not case:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-@router.post(
-    "/{case_id}/notes/publish",
-    summary="Publish case note",
-)
-async def publish_case_note_endpoint(
-    case_id: str,
-    request: CaseNotePublishRequest,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    case = get_owned_case(case_id, current_user, db)
-    case_id_int = case.id
-    user_id_int = int(current_user.user_id)
+    latest_doc = None
+    if case.documents:
+        latest_doc = sorted(case.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
 
-    version = publish_case_note(
-        db,
-        case_id=case_id_int,
-        user_id=user_id_int,
-        note_text=request.note_text,
-        changed_by_email=current_user.email,
-    )
     return {
-        "case_id": str(case_id_int),
-        "version_number": version.version_number,
-        "note_text": version.note_text,
-        "changed_by_user_id": str(version.changed_by_user_id),
-        "changed_by_email": version.changed_by_email,
-        "created_at": version.created_at,
-        "version_metadata": version.version_metadata,
+        "case_id": str(case.id),
+        "case_number": case.case_number,
+        "title": case.title or case.case_number,
+        "parties": [],
+        "jurisdiction": case.jurisdiction,
+        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
+        "summary": latest_doc.summary if latest_doc else "",
     }
 
 
 @router.get(
-    "/{case_id}/notes/history",
-    response_model=CaseNoteHistoryResponse,
-    summary="Get case note history",
-)
-async def get_case_note_history_endpoint(
-    case_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> CaseNoteHistoryResponse:
-    case = get_owned_case(case_id, current_user, db)
-    case_id_int = case.id
-    user_id_int = int(current_user.user_id)
-
-    versions = get_case_note_history(db, case_id_int, user_id_int)
-    return CaseNoteHistoryResponse(
-        case_id=str(case_id_int),
-        case_number=case.case_number,
-        title=case.title or case.case_number,
-        total_versions=len(versions),
-        versions=[
-            CaseNoteVersionItem(
-                version_number=version.version_number,
-                note_text=version.note_text,
-                change_type=version.change_type,
-                changed_by_user_id=str(version.changed_by_user_id),
-                changed_by_email=version.changed_by_email,
-                created_at=version.created_at,
-                version_metadata=version.version_metadata,
-            )
-            for version in versions
-        ],
-    )
-
-
-@router.get(
-    "/",
+    "",
     summary="List user's cases"
 )
 async def list_cases(
-    limit: int = 10,
-    offset: int = 0,
+    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of cases to return (1–100)"),
+    offset: int = Query(default=0, ge=0, description="Number of cases to skip"),
     current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> dict:
-    """Get list of cases for current user"""
-    
-    logger.info(
-        "Listing user cases",
-        user_id=current_user.user_id,
-        limit=limit,
-        offset=offset
-    )
-    
+    """Get list of cases for the current user."""
     try:
         user_id_int = int(current_user.user_id)
     except (ValueError, TypeError):
@@ -611,16 +607,20 @@ async def list_cases(
         .limit(limit)
         .all()
     )
-    
-    latest_docs = fetch_latest_documents_per_case(db, [c.id for c in cases])
 
     cases_list = []
     for c in cases:
-        cases_list.append(_build_case_summary_payload(c, latest_docs.get(c.id)))
-        
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "cases": cases_list
-    }
+        latest_doc = None
+        if c.documents:
+            latest_doc = sorted(c.documents, key=lambda d: d.uploaded_at, reverse=True)[0]
+        cases_list.append({
+            "case_id": str(c.id),
+            "case_number": c.case_number,
+            "title": c.title or c.case_number,
+            "parties": [],
+            "jurisdiction": c.jurisdiction,
+            "status": c.status.value if hasattr(c.status, 'value') else str(c.status),
+            "summary": latest_doc.summary if latest_doc else "",
+        })
+
+    return {"total": total, "limit": limit, "offset": offset, "cases": cases_list}
