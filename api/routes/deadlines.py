@@ -4,7 +4,7 @@ GET /api/v1/deadlines/upcoming - Get user's upcoming deadlines
 GET /api/v1/deadlines/{deadline_id} - Get deadline details
 POST /api/v1/deadlines - Create new deadline
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Field
 from sqlalchemy.orm import Session
 from api.models import DeadlineResponse, UpcomingDeadlinesResponse
 from api.auth import get_current_user, CurrentUser
@@ -189,10 +189,10 @@ async def get_deadline_details(
     summary="Create new deadline"
 )
 async def create_deadline(
-    title: str,
-    due_date: datetime,
-    description: str = "",
-    priority: str = "medium",
+    title: str = Field(..., min_length=1, max_length=255),
+    due_date: datetime = Field(...),
+    description: str = Field(default="", max_length=2000),
+    priority: str = Field(default="medium", max_length=50),
     case_id: str = None,
     reminder_days: int = 7,
     current_user: CurrentUser = Depends(get_current_user),
@@ -234,9 +234,9 @@ async def create_deadline(
 )
 async def update_deadline(
     deadline_id: str,
-    title: str = None,
+    title: str = Field(default=None, min_length=1, max_length=255),
     due_date: datetime = None,
-    priority: str = None,
+    priority: str = Field(default=None, max_length=50),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> DeadlineResponse:
