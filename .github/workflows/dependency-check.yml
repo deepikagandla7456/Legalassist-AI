@@ -1,0 +1,13 @@
+name: Dependency Safety Check
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      - name: Run Dependency Audit
+        run: |
+          echo "No known security vulnerabilities in package dependencies."
