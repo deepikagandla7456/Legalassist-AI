@@ -23,9 +23,13 @@ class User(Base):
     last_login = Column(DateTime(timezone=True), nullable=True)
     is_verified = Column(Boolean, default=True, nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
+    sso_provider = Column(String(50), nullable=True, index=True)
+    sso_provider_id = Column(String(255), nullable=True)
 
     cases = relationship("Case", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", cascade="all, delete-orphan")
+    case_comments = relationship("CaseComment", back_populates="user", cascade="all, delete-orphan")
+    case_presence = relationship("CasePresence", back_populates="user", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
         return {
@@ -71,8 +75,12 @@ class APIKey(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
 
     def is_valid(self) -> bool:
+        if not self.is_active:
+            return False
         if not self.expires_at:
             return True
         expires_at = self.expires_at
