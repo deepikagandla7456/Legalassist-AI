@@ -42,7 +42,7 @@ def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = No
         "parties": ["Smith", "Jones"],  # Placeholder
         "jurisdiction": case.jurisdiction,
         "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-        "summary": latest_doc.summary if latest_doc else "",
+        "summary": latest_doc.summary if latest_doc and hasattr(latest_doc, 'summary') else "",
     }
 
 
