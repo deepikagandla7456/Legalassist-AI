@@ -68,10 +68,15 @@ def _audit_case_view_route(func):
         current_user = kwargs.get("current_user")
         if result is not None and case_id is not None and current_user is not None:
             resource_id = str(case_id)
+            try:
+                actor_user_id = int(current_user.user_id)
+            except (ValueError, TypeError):
+                logger.warning("Invalid user ID format in audit", user_id=current_user.user_id)
+                return result
             record_immutable_audit_event(
                 event_type="case.viewed",
                 action="viewed",
-                actor_user_id=int(current_user.user_id),
+                actor_user_id=actor_user_id,
                 resource_type="case",
                 resource_id=resource_id,
                 outcome="success",
@@ -95,7 +100,13 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    if current_user.role != "admin" and case.user_id != user_id_int:
+    # Validate case.user_id is a valid integer before comparison
+    try:
+        case_user_id = int(case.user_id) if case.user_id is not None else None
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid user ID in case record")
+    
+    if current_user.role != "admin" and case_user_id != user_id_int:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
 
     return case
