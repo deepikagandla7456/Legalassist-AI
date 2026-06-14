@@ -442,16 +442,29 @@ async def upload_case_document_endpoint(
     if not stored:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to store uploaded file")
 
-    task = enqueue_task_from_http_request(
-        process_case_document_upload_task,
-        http_request,
-        context_user_id=current_user.user_id,
-        user_id=str(current_user.user_id),
-        case_id=str(case_id_int),
-        attachment_id=str(stored["attachment"]["id"]),
-        document_id=str(stored["document"]["id"]),
-        original_filename=file.filename,
-    )
+    try:
+        task = enqueue_task_from_http_request(
+            process_case_document_upload_task,
+            http_request,
+            context_user_id=current_user.user_id,
+            user_id=str(current_user.user_id),
+            case_id=str(case_id_int),
+            attachment_id=str(stored["attachment"]["id"]),
+            document_id=str(stored["document"]["id"]),
+            original_filename=file.filename,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to enqueue document processing task",
+            user_id=current_user.user_id,
+            case_id=case_id_int,
+            document_id=stored["document"]["id"],
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to queue document processing task"
+        )
 
     return {
         "status": "queued",

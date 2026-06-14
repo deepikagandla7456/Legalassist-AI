@@ -4,7 +4,7 @@ POST /api/v1/analyze/document - Analyze document asynchronously
 GET /api/v1/analyze/{job_id} - Check analysis job status
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends
 from fastapi import Request
 from api.models import DocumentAnalysisRequest, DocumentAnalysisSummary, AnalysisJobResponse
@@ -267,11 +267,19 @@ async def upload_document_file(
             created_at=datetime.now(timezone.utc)
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(
-            "File upload failed",
+            "Document upload or task enqueue failed",
             user_id=current_user.user_id,
             filename=file.filename,
             error=str(e),
         )
+        # Differentiate between validation errors and task queue failures
+        if "enqueue_task" in str(type(e).__name__) or "Celery" in str(type(e).__name__):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to queue document processing task"
+            )
         raise
