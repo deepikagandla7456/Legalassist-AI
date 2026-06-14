@@ -1,0 +1,62 @@
+name: Welcome Contributor
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome Issue Creator
+        if: github.event.issues && github.event.action == 'opened'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = github.context.payload.issue;
+            const creator = issue.user.login;
+            
+            // Check if user has other issues
+            const response = await github.rest.issues.listForRepo({
+              owner: github.context.repo.owner,
+              repo: github.context.repo.repo,
+              creator: creator,
+              state: 'all'
+            });
+            
+            const userIssues = response.data.filter(i => !i.pull_request);
+            if (userIssues.length === 1) {
+              await github.rest.issues.createComment({
+                owner: github.context.repo.owner,
+                repo: github.context.repo.repo,
+                issue_number: issue.number,
+                body: `🎉 Welcome @${creator} to the Legalassist-AI community! Thank you for opening your first issue here. \n\nWe appreciate you taking the time to report this. A maintainer will review it shortly. In the meantime, please make sure you have followed the guidelines in our [CONTRIBUTING.md](https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/blob/main/CONTRIBUTING.md).`
+              });
+            }
+
+      - name: Welcome PR Creator
+        if: github.event.pull_request && github.event.action == 'opened'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = github.context.payload.pull_request;
+            const creator = pr.user.login;
+            
+            // Check if user has other PRs
+            const response = await github.rest.pulls.list({
+              owner: github.context.repo.owner,
+              repo: github.context.repo.repo,
+              creator: creator,
+              state: 'all'
+            });
+            
+            if (response.data.length === 1) {
+              await github.rest.issues.createComment({
+                owner: github.context.repo.owner,
+                repo: github.context.repo.repo,
+                issue_number: pr.number,
+                body: `🚀 Thank you @${creator} for submitting your first pull request! We are excited to have you contribute to Legalassist-AI. \n\nOur automated tests will run shortly to verify your changes. Please review the checklist in the PR description and make sure you follow our styling and testing standards. If you have any questions, feel free to ask here!`
+              });
+            }
