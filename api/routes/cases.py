@@ -51,12 +51,12 @@ logger = structlog.get_logger(__name__)
 def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
     return {
         "case_id": str(case.id),
-        "case_number": case.case_number,
-        "title": case.title or case.case_number,
+        "case_number": case.case_number or "",
+        "title": case.title or case.case_number or "Untitled Case",
         "parties": ["Smith", "Jones"],  # Placeholder
-        "jurisdiction": case.jurisdiction,
-        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-        "summary": latest_doc.summary if latest_doc else "",
+        "jurisdiction": case.jurisdiction or "Unknown",
+        "status": case.status.value if case.status and hasattr(case.status, 'value') else (str(case.status) if case.status else "unknown"),
+        "summary": (latest_doc.summary if hasattr(latest_doc, 'summary') else "") if latest_doc else "",
     }
 
 
