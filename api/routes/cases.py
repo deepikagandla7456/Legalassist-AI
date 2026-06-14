@@ -588,11 +588,11 @@ async def list_cases(
             detail="Invalid user ID format"
         )
     
-    total = db.query(Case).filter(Case.user_id == user_id_int).count()
+    query = db.query(Case).filter(Case.user_id == user_id_int)
+    total = query.count()
     
     cases = (
-        db.query(Case)
-        .filter(Case.user_id == user_id_int)
+        query
         .order_by(Case.created_at.desc())
         .offset(offset)
         .limit(limit)
