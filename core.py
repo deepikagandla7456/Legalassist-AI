@@ -407,7 +407,6 @@ def parse_llm_json(raw_text: str) -> Dict[str, Any]:
         clean_json = raw_text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
     except (json.JSONDecodeError, ValueError):
-    except:
         return {
             "summary": raw_text, 
             "confidence_score": 0.3, 
@@ -708,7 +707,6 @@ def parse_timeline(raw_text: str) -> List[Dict[str, str]]:
                 for fmt in ("%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%Y/%m/%d"):
                     try: return datetime.strptime(date_str, fmt)
                     except ValueError: continue
-                    except: continue
                 return datetime(9999, 12, 31)
             except Exception:
                 return datetime(9999, 12, 31)
