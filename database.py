@@ -416,10 +416,13 @@ def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken
     return token
 
 
-# Database initialization
-def init_db():
-    """Create all tables"""
-    Base.metadata.create_all(bind=engine)
+def create_user(db: Session, email: str) -> User:
+    """Create a new user"""
+    user = User(email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 def cleanup_expired_revoked_tokens(db: Session, batch_size: int = 1000) -> int:
     """Delete expired revoked tokens in batches to avoid lock contention."""
@@ -585,6 +588,13 @@ def delete_case(db: Session, case_id: int) -> bool:
         db.rollback()
         raise
 
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to update.
+        lockout_duration_minutes: Duration to lock out the email after max
+            failed attempts are reached (default: 15 minutes).
+        max_failed_attempts: Number of consecutive failures that trigger a
+            lockout (default: 5).
 
 def create_case_document(
     db: Session,
@@ -610,6 +620,10 @@ def create_case_document(
     db.refresh(doc)
     return doc
 
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
 
 def create_case_record(
     db: Session,
@@ -780,11 +794,13 @@ def submit_user_feedback(
         satisfaction_rating=satisfaction_rating,
         feedback_text=feedback_text,
     )
-    db.add(feedback)
-    db.commit()
-    db.refresh(feedback)
-    return feedback
 
+def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
+    """Reset the failed-attempt counter and any lockout on successful verification.
+
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to reset.
 
 def get_user_feedback(db: Session, user_id: int) -> List[UserFeedback]:
     """Get feedback history for a user"""
