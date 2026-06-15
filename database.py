@@ -11,39 +11,6 @@ come from db/ subpackages. Do not define duplicate functions here.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-import enum
-import logging
-from typing import Optional, List, Tuple
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Enum as SQLEnum,
-    ForeignKey,
-    Index,
-    Integer,
-    JSON,
-    String,
-    Text,
-    UniqueConstraint,
-    create_engine,
-    make_url,
-)
-
-from db.crud.users import (
-    get_user_by_email,
-    create_user,
-    update_user_last_login,
-    create_otp_verification,
-    get_pending_otp,
-    mark_otp_as_used,
-    is_email_locked_out,
-    record_otp_failed_attempt,
-    reset_otp_failed_attempts,
-    cleanup_expired_otps,
-    create_or_update_user_preference,
-)
 import datetime as dt
 import threading
 from typing import Optional, List
@@ -449,29 +416,13 @@ def revoke_token(db: Session, jti: str, expires_at: dt.datetime) -> RevokedToken
     return token
 
 
-def aggregate_model_performance(db: Session, task: Optional[str] = None) -> List[ModelPerformance]:
-    """Compute simple model performance aggregates from `model_feedback` rows."""
-    return []
-
-
-def get_user_by_email(db: Session, email: str) -> Optional[User]:
-    """Get a user by email address."""
-    return db.query(User).filter(User.email == email).first()
-
-
 def create_user(db: Session, email: str) -> User:
-    """Create a new user."""
+    """Create a new user"""
     user = User(email=email)
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
-
-
-# Database initialization
-def init_db():
-    """Create all tables"""
-    Base.metadata.create_all(bind=engine)
 
 def cleanup_expired_revoked_tokens(db: Session, batch_size: int = 1000) -> int:
     """Delete expired revoked tokens in batches to avoid lock contention."""
@@ -632,17 +583,18 @@ def delete_case(db: Session, case_id: int) -> bool:
 
         db.delete(case)
         db.commit()
-        try:
-            from core.embedding_engine import get_vector_store
-            vs = get_vector_store()
-            vs.delete(case_id)
-        except Exception as ev:
-            logger.warning(f"Failed to auto-invalidate vector store on case deletion: {ev}")
         return True
     except Exception:
         db.rollback()
         raise
 
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to update.
+        lockout_duration_minutes: Duration to lock out the email after max
+            failed attempts are reached (default: 15 minutes).
+        max_failed_attempts: Number of consecutive failures that trigger a
+            lockout (default: 5).
 
 def create_case_document(
     db: Session,
@@ -668,6 +620,10 @@ def create_case_document(
     db.refresh(doc)
     return doc
 
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
 
 def create_case_record(
     db: Session,
@@ -838,11 +794,13 @@ def submit_user_feedback(
         satisfaction_rating=satisfaction_rating,
         feedback_text=feedback_text,
     )
-    db.add(feedback)
-    db.commit()
-    db.refresh(feedback)
-    return feedback
 
+def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
+    """Reset the failed-attempt counter and any lockout on successful verification.
+
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to reset.
 
 def get_user_feedback(db: Session, user_id: int) -> List[UserFeedback]:
     """Get feedback history for a user"""
@@ -872,8 +830,11 @@ def update_user_last_login(db: Session, user_id: int) -> User:
     if user:
         user.last_login = dt.datetime.now(dt.timezone.utc)
         db.commit()
-        db.refresh(user)
-    return user
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
 
 
 # Thread lock for OTP rate-limit enforcement (single source of truth).
@@ -930,8 +891,16 @@ def mark_otp_as_used(db: Session, otp_id: int) -> bool:
     if otp:
         otp.is_used = True
         db.commit()
+        try:
+            from core.embedding_engine import get_vector_store
+            vs = get_vector_store()
+            vs.delete(case_id)
+        except Exception as ev:
+            logger.warning(f"Failed to auto-invalidate vector store on case deletion: {ev}")
         return True
-    return False
+    except Exception:
+        db.rollback()
+        raise
 
 
 
@@ -1156,17 +1125,6 @@ def create_case_document(
     db.add(doc)
     db.commit()
     db.refresh(doc)
-    try:
-        from core.embedding_engine import get_embedding_engine, get_vector_store
-        import json
-        engine = get_embedding_engine()
-        emb_obj = engine.embed_case(db, normalized_case_id, force_regenerate=True)
-        if emb_obj:
-            vec = json.loads(emb_obj.embedding_vector)
-            vs = get_vector_store()
-            vs.add_batch([(normalized_case_id, vec)])
-    except Exception as ev:
-        logger.warning(f"Failed to auto-synchronize vector store on document creation: {ev}")
     return doc
 
 
@@ -1210,17 +1168,6 @@ def update_case_document(
         try:
             db.commit()
             db.refresh(doc)
-            try:
-                from core.embedding_engine import get_embedding_engine, get_vector_store
-                import json
-                engine = get_embedding_engine()
-                emb_obj = engine.embed_case(db, doc.case_id, force_regenerate=True)
-                if emb_obj:
-                    vec = json.loads(emb_obj.embedding_vector)
-                    vs = get_vector_store()
-                    vs.add_batch([(doc.case_id, vec)])
-            except Exception as ev:
-                logger.warning(f"Failed to auto-synchronize vector store on document update: {ev}")
         except Exception as e:
             db.rollback()
             raise RuntimeError(f"Database write failed for case document {document_id}: {str(e)}") from e
@@ -1350,159 +1297,25 @@ def cleanup_expired_revoked_tokens(db: Session) -> int:
 
 def submit_similarity_feedback(
     db: Session,
-    user_id: int | str,
-    candidate_case_id: int,
-    query_signature: str,
-    relevance: bool,
-) -> SimilarityFeedback:
-    """Submit similarity feedback for search queries."""
-    feedback = SimilarityFeedback(
-        user_id=str(user_id),
-        candidate_case_id=candidate_case_id,
-        query_signature=query_signature,
-        relevance=relevance,
+    case_id: int,
+    event_type: str,
+    description: str,
+    event_date: Optional[dt.datetime] = None,
+    metadata: Optional[dict] = None,
+) -> CaseTimeline:
+    """Create a new timeline event.
+    
+    Note: Ensures that the instantiated CaseTimeline is correctly added to the
+    session using the explicit local variable reference to prevent NameErrors.
+    """
+    event = CaseTimeline(
+        case_id=case_id,
+        event_type=event_type,
+        description=description,
+        event_date=event_date or dt.datetime.now(dt.timezone.utc),
+        event_metadata=metadata,
     )
     db.add(feedback)
-    db.commit()
-    db.refresh(feedback)
-    return feedback
-
-
-def get_similarity_feedback(
-    db: Session,
-    user_id: Optional[str] = None,
-    query_signature: Optional[str] = None,
-    candidate_case_id: Optional[int] = None,
-    limit: int = 100,
-) -> List[SimilarityFeedback]:
-    """Get similarity feedback rows filtered by user, query, or candidate case"""
-    query = db.query(SimilarityFeedback)
-
-    if user_id is not None:
-        query = query.filter(SimilarityFeedback.user_id == str(user_id))
-    if query_signature is not None:
-        query = query.filter(SimilarityFeedback.query_signature == query_signature)
-    if candidate_case_id is not None:
-        query = query.filter(SimilarityFeedback.candidate_case_id == candidate_case_id)
-
-    return query.order_by(SimilarityFeedback.created_at.desc()).limit(limit).all()
-
-
-def reserve_idempotency_key(db: Session, key: str, method: str, path: str) -> tuple[IdempotencyKey, bool]:
-    """Reserve an idempotency key within a nested transaction/savepoint."""
-    from sqlalchemy.exc import IntegrityError
-    ik = IdempotencyKey(
-        key=key,
-        method=method,
-        path=path,
-        status=IdempotencyKeyStatus.IN_PROGRESS,
-    )
-    try:
-        with db.begin_nested():
-            db.add(ik)
-        db.commit()
-        db.refresh(ik)
-        return ik, True
-    except IntegrityError:
-        existing = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
-        return existing, False
-
-
-def set_idempotency_response(db: Session, key: str, status_code: int, headers: dict, body: str) -> IdempotencyKey:
-    """Set the response payload for a completed idempotency key."""
-    from sqlalchemy.exc import IntegrityError
-    ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
-    if not ik:
-        try:
-            ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
-            with db.begin_nested():
-                db.add(ik)
-            db.commit()
-        except IntegrityError:
-            ik = db.query(IdempotencyKey).filter(IdempotencyKey.key == key).first()
-            if not ik:
-                ik = IdempotencyKey(key=key, method="POST", path="unknown", status=IdempotencyKeyStatus.COMPLETED)
-                db.add(ik)
-                db.commit()
-    ik.status = IdempotencyKeyStatus.COMPLETED
-    ik.response_status = status_code
-    ik.response_headers = headers
-    ik.response_body = body
-    ik.completed_at = dt.datetime.now(dt.timezone.utc)
-    db.commit()
-    db.refresh(ik)
-    return ik
-
-
-def get_idempotency_response(db: Session, key: str) -> Optional[dict]:
-    """Retrieve the cached response for a completed idempotency key."""
-    ik = db.query(IdempotencyKey).filter(
-        IdempotencyKey.key == key,
-        IdempotencyKey.status == IdempotencyKeyStatus.COMPLETED
-    ).first()
-    if ik:
-        return {
-            "status_code": ik.response_status,
-            "headers": ik.response_headers,
-            "body": ik.response_body,
-        }
-    return None
-
-
-
-def delete_user_cases(db: Session, user_id: int) -> dict:
-    """Delete all cases and associated data for a user.
-    
-    This performs a soft deletion approach where cases are marked
-    as deleted rather than immediately removed from the database.
-    
-    Args:
-        db: Database session
-        user_id: The ID of the user whose cases should be deleted
-        
-    Returns:
-        Dictionary with counts of deleted items
-    """
-    deleted_counts = {
-        "cases": 0,
-        "documents": 0,
-        "deadlines": 0,
-        "timeline_events": 0,
-    }
-    
-    cases = db.query(Case).filter(Case.user_id == user_id).all()
-    case_ids = [c.id for c in cases]
-    
-    if not case_ids:
-        return deleted_counts
-    
-    # Delete documents
-    docs = db.query(CaseDocument).filter(CaseDocument.case_id.in_(case_ids)).all()
-    deleted_counts["documents"] = len(docs)
-    db.query(CaseDocument).filter(CaseDocument.case_id.in_(case_ids)).delete(
-        synchronize_session=False
-    )
-    
-    # Delete timeline events
-    events = db.query(CaseTimeline).filter(CaseTimeline.case_id.in_(case_ids)).all()
-    deleted_counts["timeline_events"] = len(events)
-    db.query(CaseTimeline).filter(CaseTimeline.case_id.in_(case_ids)).delete(
-        synchronize_session=False
-    )
-    
-    # Delete deadlines
-    deadlines = db.query(CaseDeadline).filter(
-        (CaseDeadline.user_id == user_id) | (CaseDeadline.case_id.in_(case_ids))
-    ).all()
-    deleted_counts["deadlines"] = len(deadlines)
-    db.query(CaseDeadline).filter(
-        (CaseDeadline.user_id == user_id) | (CaseDeadline.case_id.in_(case_ids))
-    ).delete(synchronize_session=False)
-    
-    # Delete cases
-    deleted_counts["cases"] = len(cases)
-    db.query(Case).filter(Case.user_id == user_id).delete(synchronize_session=False)
-    
     db.commit()
     db.refresh(feedback)
     return feedback
@@ -1645,3 +1458,5 @@ def redact_user_data(db: Session, user_id: int) -> int:
     
     db.commit()
     return redacted_count
+
+
