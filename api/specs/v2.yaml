@@ -1,0 +1,528 @@
+openapi: 3.0.0
+info:
+  title: LegalAssist AI API v2
+  description: |
+    Comprehensive legal case analysis and deadline management API.
+    
+    ## API Versions
+    This is **v2** - the current stable version.
+    - `/api/v2/*` - Current stable release
+    
+    ## New in v2
+    - Enhanced case management with improved filtering
+    - Real-time notifications via Webhooks
+    - Improved rate limits
+    - Better error messages
+    - GraphQL support
+    
+    ## Migration from v1
+    See the migration guide at https://docs.legalassist.ai/migration/v1-to-v2
+  
+  version: "2.0"
+  contact:
+    name: LegalAssist AI Support
+    email: support@legalassist.ai
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.legalassist.ai/api/v2
+    description: Version 2 API (current)
+  - url: http://localhost:8000/api/v2
+    description: Local development
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+tags:
+  - name: Cases
+    description: Case management operations
+  - name: Documents
+    description: Document upload and management
+  - name: Deadlines
+    description: Deadline tracking and management
+  - name: Auth
+    description: Authentication and authorization
+  - name: Analytics
+    description: Analytics and reporting
+  - name: Webhooks
+    description: Real-time notifications
+
+paths:
+  /cases:
+    get:
+      tags: [Cases]
+      summary: List cases
+      description: Get a paginated list of cases for the authenticated user
+      operationId: listCasesV2
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, pending, closed, archived]
+        - name: case_type
+          in: query
+          schema:
+            type: string
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseListV2'
+
+    post:
+      tags: [Cases]
+      summary: Create case
+      operationId: createCaseV2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCaseRequest'
+      responses:
+        '201':
+          description: Case created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseV2'
+
+  /cases/{case_id}:
+    get:
+      tags: [Cases]
+      summary: Get case details
+      operationId: getCaseV2
+      parameters:
+        - name: case_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseV2'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Cases]
+      summary: Update case
+      operationId: updateCaseV2
+      parameters:
+        - name: case_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCaseRequest'
+      responses:
+        '200':
+          description: Case updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseV2'
+
+    delete:
+      tags: [Cases]
+      summary: Delete case
+      description: Soft deletes the case and all associated data
+      operationId: deleteCaseV2
+      parameters:
+        - name: case_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Case deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents:
+    post:
+      tags: [Documents]
+      summary: Upload document
+      operationId: uploadDocumentV2
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                case_id:
+                  type: integer
+                document_type:
+                  type: string
+                  enum: [pleading, judgment, contract, evidence, correspondence, other]
+      responses:
+        '201':
+          description: Document uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentV2'
+
+  /deadlines:
+    get:
+      tags: [Deadlines]
+      summary: List deadlines
+      operationId: listDeadlinesV2
+      parameters:
+        - name: upcoming_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: days_ahead
+          in: query
+          schema:
+            type: integer
+            default: 30
+            description: Number of days to look ahead
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadlineListV2'
+
+    post:
+      tags: [Deadlines]
+      summary: Create deadline
+      operationId: createDeadlineV2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeadlineRequest'
+      responses:
+        '201':
+          description: Deadline created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadlineV2'
+
+  /webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhooks
+      operationId: listWebhooksV2
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Webhook'
+
+    post:
+      tags: [Webhooks]
+      summary: Create webhook
+      operationId: createWebhookV2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+      responses:
+        '201':
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from /api/v2/auth/token
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key from /api/v2/auth/api-keys
+
+  schemas:
+    CaseV2:
+      type: object
+      required: [id, reference_id, title, case_type, status]
+      properties:
+        id:
+          type: integer
+        reference_id:
+          type: string
+          description: Unique case reference ID
+        actor_id:
+          type: integer
+          description: User ID who owns this case
+        title:
+          type: string
+        description:
+          type: string
+        case_type:
+          type: string
+          enum: [civil, criminal, corporate, family, property, intellectual_property, other]
+        jurisdiction:
+          type: string
+        status:
+          type: string
+          enum: [active, pending, closed, archived]
+        outcome:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CaseListV2:
+      type: object
+      properties:
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseV2'
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        has_more:
+          type: boolean
+
+    CreateCaseRequest:
+      type: object
+      required: [title, case_type]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        description:
+          type: string
+        case_type:
+          type: string
+          enum: [civil, criminal, corporate, family, property, intellectual_property, other]
+        jurisdiction:
+          type: string
+
+    UpdateCaseRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, pending, closed, archived]
+        outcome:
+          type: string
+        metadata:
+          type: object
+
+    DocumentV2:
+      type: object
+      required: [id, case_id, filename]
+      properties:
+        id:
+          type: integer
+        case_id:
+          type: integer
+        actor_id:
+          type: integer
+        filename:
+          type: string
+        document_type:
+          type: string
+          enum: [pleading, judgment, contract, evidence, correspondence, other]
+        content_type:
+          type: string
+        size_bytes:
+          type: integer
+        summary:
+          type: string
+          nullable: true
+        uploaded_at:
+          type: string
+          format: date-time
+
+    DeadlineV2:
+      type: object
+      required: [id, case_id, deadline_type, deadline_date]
+      properties:
+        id:
+          type: integer
+        case_id:
+          type: integer
+        actor_id:
+          type: integer
+        deadline_type:
+          type: string
+          enum: [filing, hearing, appeal, compliance, custom]
+        deadline_date:
+          type: string
+          format: date
+        description:
+          type: string
+        completed:
+          type: boolean
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    DeadlineListV2:
+      type: object
+      properties:
+        deadlines:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeadlineV2'
+        total:
+          type: integer
+        upcoming:
+          type: integer
+          description: Count of upcoming deadlines
+
+    CreateDeadlineRequest:
+      type: object
+      required: [case_id, deadline_type, deadline_date]
+      properties:
+        case_id:
+          type: integer
+        deadline_type:
+          type: string
+          enum: [filing, hearing, appeal, compliance, custom]
+        deadline_date:
+          type: string
+          format: date
+        description:
+          type: string
+
+    Webhook:
+      type: object
+      required: [id, url, events]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum: [case.created, case.updated, case.deleted, deadline.created, deadline.completed, document.uploaded]
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    CreateWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum: [case.created, case.updated, case.deleted, deadline.created, deadline.completed, document.uploaded]
+        secret:
+          type: string
+          description: Webhook secret for signature verification
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              message:
+                type: string
+              resource_type:
+                type: string
+              resource_id:
+                type: string
+
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              message:
+                type: string
+              details:
+                type: array
+                items:
+                  type: object
