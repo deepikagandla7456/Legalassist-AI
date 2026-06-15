@@ -37,12 +37,12 @@ logger = structlog.get_logger(__name__)
 def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
     return {
         "case_id": str(case.id),
-        "case_number": case.case_number,
-        "title": case.title or case.case_number,
+        "case_number": case.case_number or "",
+        "title": case.title or case.case_number or "Untitled Case",
         "parties": ["Smith", "Jones"],  # Placeholder
-        "jurisdiction": case.jurisdiction,
-        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-        "summary": latest_doc.summary if latest_doc else "",
+        "jurisdiction": case.jurisdiction or "Unknown",
+        "status": case.status.value if case.status and hasattr(case.status, 'value') else (str(case.status) if case.status else "unknown"),
+        "summary": (latest_doc.summary if hasattr(latest_doc, 'summary') else "") if latest_doc else "",
     }
 
 
@@ -84,7 +84,13 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    if current_user.role != "admin" and case.user_id != user_id_int:
+    # Validate case.user_id is a valid integer before comparison
+    try:
+        case_user_id = int(case.user_id) if case.user_id is not None else None
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid user ID in case record")
+    
+    if current_user.role != "admin" and case_user_id != user_id_int:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
 
     return case

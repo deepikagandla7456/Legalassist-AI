@@ -461,3 +461,101 @@ class ShardedVectorStore:
         results: List[Tuple[int, float]] = [item for batch in shard_results for item in batch]
         results.sort(key=lambda x: (-x[1], x[0]))
         return results[:top_k]
+
+    def delete_vectors_by_case(self, case_id: int) -> int:
+        """Delete all vectors for a specific case.
+        
+        Args:
+            case_id: The case ID whose vectors should be deleted
+            
+        Returns:
+            Number of vectors deleted
+        """
+        shard = self.shard_for_id(case_id)
+        deleted_count = 0
+        
+        with self._state_lock:
+            with self._locks[shard]:
+                shard_data = self._shards[shard]
+                
+                if case_id in shard_data['id_to_index']:
+                    idx = shard_data['id_to_index'][case_id]
+                    
+                    # Remove from ids list
+                    if idx < len(shard_data['ids']):
+                        shard_data['ids'].pop(idx)
+                    
+                    # Remove from vectors array
+                    if idx < shard_data['vectors'].shape[0]:
+                        shard_data['vectors'] = np.delete(shard_data['vectors'], idx, axis=0)
+                    
+                    # Remove from metadatas
+                    if case_id in shard_data['metadatas']:
+                        del shard_data['metadatas'][case_id]
+                    
+                    # Rebuild id_to_index
+                    shard_data['id_to_index'] = {
+                        cid: i for i, cid in enumerate(shard_data['ids'])
+                    }
+                    
+                    deleted_count = 1
+                
+                # Persist the updated shard
+                self._persist_shard(shard)
+        
+        if deleted_count > 0:
+            logger.info("Deleted %d vectors for case %s", deleted_count, case_id)
+        
+        return deleted_count
+
+    def delete_vectors_by_user(self, user_case_ids: List[int]) -> int:
+        """Delete all vectors for multiple cases belonging to a user.
+        
+        Args:
+            user_case_ids: List of case IDs whose vectors should be deleted
+            
+        Returns:
+            Total number of vectors deleted
+        """
+        total_deleted = 0
+        for case_id in user_case_ids:
+            try:
+                deleted = self.delete_vectors_by_case(case_id)
+                total_deleted += deleted
+            except Exception as e:
+                logger.error("Failed to delete vectors for case %s: %s", case_id, e)
+        
+        logger.info("Deleted %d total vectors for user", total_deleted)
+        return total_deleted
+
+    def get_vector_count(self) -> int:
+        """Get total number of vectors across all shards.
+        
+        Returns:
+            Total vector count
+        """
+        with self._state_lock:
+            return sum(len(shard_data['ids']) for shard_data in self._shards.values())
+
+    def get_vectors_for_case(self, case_id: int) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
+        """Retrieve vector and metadata for a specific case.
+        
+        Args:
+            case_id: The case ID to look up
+            
+        Returns:
+            Tuple of (vector, metadata) or None if not found
+        """
+        shard = self.shard_for_id(case_id)
+        
+        with self._state_lock:
+            with self._locks[shard]:
+                shard_data = self._shards[shard]
+                
+                if case_id in shard_data['id_to_index']:
+                    idx = shard_data['id_to_index'][case_id]
+                    vector = shard_data['vectors'][idx]
+                    metadata = shard_data['metadatas'].get(case_id, {})
+                    return (vector, metadata)
+        
+        return None

@@ -384,12 +384,44 @@ async def list_reports(
     ``_sync_report_statuses`` after all entries have been staged, ensuring the
     transaction boundary remains at the end of the loop rather than inside it.
     """
-    all_reports = _sync_report_statuses(current_user.user_id)
+    Get list of generated reports for current user with pagination.
+    
+    Optional filters:
+    - status_filter: Filter by status (pending, processing, completed, failed)
+    """
+    
+    query = db.query(Report).filter(Report.user_id == current_user.user_id)
+    total = query.count()
+    reports = query.order_by(Report.created_at.desc()).offset(offset).limit(limit).all()
 
-    # Apply pagination after the full sync so counts are accurate.
-    total = len(all_reports)
-    page = all_reports[offset: offset + limit]
+    reports_data = []
+    for r in reports:
+        status_str = r.status
+        if r.status in ["pending", "processing"] and r.job_id:
+            try:
+                status_info = TaskStatus.get_task_status(r.job_id)
+                celery_status = status_info["status"]
+                if celery_status != r.status:
+                    r.status = celery_status
+                    if celery_status == "completed":
+                        r.completed_at = datetime.utcnow()
+                    db.commit()
+                    status_str = r.status
+            except Exception:
+                pass
 
+        reports_data.append({
+            "report_id": r.report_id,
+            "job_id": r.job_id or "unknown",
+            "case_id": r.case_id,
+            "status": status_str,
+            "report_type": r.report_type or "comprehensive",
+            "format": r.format,
+            "download_url": f"/api/v1/reports/{r.report_id}/download" if status_str == "completed" else None,
+            "created_at": r.created_at,
+            "completed_at": r.completed_at
+        })
+        
     return {
         "total": total,
         "limit": limit,
