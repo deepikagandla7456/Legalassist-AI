@@ -46,31 +46,8 @@ def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = No
     }
 
 
-def _audit_case_view_route(func):
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        result = await func(*args, **kwargs)
-        case_id = kwargs.get("case_id")
-        current_user = kwargs.get("current_user")
-        if result is not None and case_id is not None and current_user is not None:
-            resource_id = str(case_id)
-            try:
-                actor_user_id = int(current_user.user_id)
-            except (ValueError, TypeError):
-                logger.warning("Invalid user ID format in audit", user_id=current_user.user_id)
-                return result
-            record_immutable_audit_event(
-                event_type="case.viewed",
-                action="viewed",
-                actor_user_id=actor_user_id,
-                resource_type="case",
-                resource_id=resource_id,
-                outcome="success",
-                metadata={
-                    "route": "/api/v1/cases/{case_id}",
-                },
-            )
-        return result
+def _record_case_view_audit(case_id: str, current_user: CurrentUser) -> None:
+    """Record an immutable audit event for a case view.
 
     Called directly inside the route handler so that ``case_id`` and
     ``current_user`` are always the real, dependency-resolved values rather
