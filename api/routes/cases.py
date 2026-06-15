@@ -429,11 +429,107 @@ async def upload_case_document_endpoint(
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Get complete case details from database."""
+    """Store an upload, create linked attachment/document rows, and queue OCR extraction."""
+    case = get_owned_case(case_id, current_user, db)
+    case_id_int = case.id
+    user_id_int = int(current_user.user_id)
+
+    allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+    allowed_mime_types = {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/tiff",
+        "image/bmp",
+        "image/webp",
+    }
+
+    validate_file_upload(
+        file,
+        max_size=ValidationConfig.MAX_UPLOAD_SIZE,
+        allowed_extensions=allowed_extensions,
+        allowed_mime_types=allowed_mime_types,
+    )
+    await validate_file_upload_streaming(file, max_size=ValidationConfig.MAX_UPLOAD_SIZE)
+    file_bytes = await file.read()
+
+    from case_manager import upload_case_document_file
+
+    stored = upload_case_document_file(
+        user_id=user_id_int,
+        case_id=case_id_int,
+        file_bytes=file_bytes,
+        filename=file.filename,
+        document_type=getattr(DocumentType, document_type.upper(), DocumentType.OTHER),
+        content_type=file.content_type,
+    )
+    if not stored:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to store uploaded file")
+
     try:
-        case_id_int = int(case_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid case ID")
+        task = enqueue_task_from_http_request(
+            process_case_document_upload_task,
+            http_request,
+            context_user_id=current_user.user_id,
+            user_id=str(current_user.user_id),
+            case_id=str(case_id_int),
+            attachment_id=str(stored["attachment"]["id"]),
+            document_id=str(stored["document"]["id"]),
+            original_filename=file.filename,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to enqueue document processing task",
+            user_id=current_user.user_id,
+            case_id=case_id_int,
+            document_id=stored["document"]["id"],
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to queue document processing task"
+        )
+
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "case_id": case_id_int,
+        "attachment_id": stored["attachment"]["id"],
+        "document_id": stored["document"]["id"],
+        "document_type": stored["document"]["document_type"],
+        "filename": file.filename,
+    }
+
+
+@router.post(
+    "/{case_id}/notes/draft",
+    summary="Save case note draft",
+)
+async def save_case_note_draft_endpoint(
+    case_id: str,
+    request: CaseNoteDraftRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    case = get_owned_case(case_id, current_user, db)
+    case_id_int = case.id
+    user_id_int = int(current_user.user_id)
+
+    note = save_case_note_draft(
+        db,
+        case_id=case_id_int,
+        user_id=user_id_int,
+        note_text=request.note_text,
+        changed_by_email=current_user.email,
+    )
+    return {
+        "case_id": str(case_id_int),
+        "note_id": note.id,
+        "draft_text": note.draft_text,
+        "draft_updated_at": note.draft_updated_at,
+        "published_at": note.published_at,
+    }
 
     db = get_db()
     try:
