@@ -37,12 +37,12 @@ logger = structlog.get_logger(__name__)
 def _build_case_summary_payload(case: Case, latest_doc: CaseDocument | None = None) -> dict:
     return {
         "case_id": str(case.id),
-        "case_number": case.case_number,
-        "title": case.title or case.case_number,
+        "case_number": case.case_number or "",
+        "title": case.title or case.case_number or "Untitled Case",
         "parties": ["Smith", "Jones"],  # Placeholder
-        "jurisdiction": case.jurisdiction,
-        "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-        "summary": latest_doc.summary if latest_doc else "",
+        "jurisdiction": case.jurisdiction or "Unknown",
+        "status": case.status.value if case.status and hasattr(case.status, 'value') else (str(case.status) if case.status else "unknown"),
+        "summary": (latest_doc.summary if hasattr(latest_doc, 'summary') else "") if latest_doc else "",
     }
 
 
@@ -84,7 +84,13 @@ def get_owned_case(case_id: str, current_user: CurrentUser, db: Session) -> Case
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    if current_user.role != "admin" and case.user_id != user_id_int:
+    # Validate case.user_id is a valid integer before comparison
+    try:
+        case_user_id = int(case.user_id) if case.user_id is not None else None
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid user ID in case record")
+    
+    if current_user.role != "admin" and case_user_id != user_id_int:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this case")
 
     return case
@@ -423,11 +429,107 @@ async def upload_case_document_endpoint(
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Get complete case details from database."""
+    """Store an upload, create linked attachment/document rows, and queue OCR extraction."""
+    case = get_owned_case(case_id, current_user, db)
+    case_id_int = case.id
+    user_id_int = int(current_user.user_id)
+
+    allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+    allowed_mime_types = {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/tiff",
+        "image/bmp",
+        "image/webp",
+    }
+
+    validate_file_upload(
+        file,
+        max_size=ValidationConfig.MAX_UPLOAD_SIZE,
+        allowed_extensions=allowed_extensions,
+        allowed_mime_types=allowed_mime_types,
+    )
+    await validate_file_upload_streaming(file, max_size=ValidationConfig.MAX_UPLOAD_SIZE)
+    file_bytes = await file.read()
+
+    from case_manager import upload_case_document_file
+
+    stored = upload_case_document_file(
+        user_id=user_id_int,
+        case_id=case_id_int,
+        file_bytes=file_bytes,
+        filename=file.filename,
+        document_type=getattr(DocumentType, document_type.upper(), DocumentType.OTHER),
+        content_type=file.content_type,
+    )
+    if not stored:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to store uploaded file")
+
     try:
-        case_id_int = int(case_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid case ID")
+        task = enqueue_task_from_http_request(
+            process_case_document_upload_task,
+            http_request,
+            context_user_id=current_user.user_id,
+            user_id=str(current_user.user_id),
+            case_id=str(case_id_int),
+            attachment_id=str(stored["attachment"]["id"]),
+            document_id=str(stored["document"]["id"]),
+            original_filename=file.filename,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to enqueue document processing task",
+            user_id=current_user.user_id,
+            case_id=case_id_int,
+            document_id=stored["document"]["id"],
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to queue document processing task"
+        )
+
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "case_id": case_id_int,
+        "attachment_id": stored["attachment"]["id"],
+        "document_id": stored["document"]["id"],
+        "document_type": stored["document"]["document_type"],
+        "filename": file.filename,
+    }
+
+
+@router.post(
+    "/{case_id}/notes/draft",
+    summary="Save case note draft",
+)
+async def save_case_note_draft_endpoint(
+    case_id: str,
+    request: CaseNoteDraftRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    case = get_owned_case(case_id, current_user, db)
+    case_id_int = case.id
+    user_id_int = int(current_user.user_id)
+
+    note = save_case_note_draft(
+        db,
+        case_id=case_id_int,
+        user_id=user_id_int,
+        note_text=request.note_text,
+        changed_by_email=current_user.email,
+    )
+    return {
+        "case_id": str(case_id_int),
+        "note_id": note.id,
+        "draft_text": note.draft_text,
+        "draft_updated_at": note.draft_updated_at,
+        "published_at": note.published_at,
+    }
 
     db = get_db()
     try:
@@ -467,12 +569,16 @@ async def list_cases(
     try:
         user_id_int = int(current_user.user_id)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID")
-
-    total = db.query(Case).filter(Case.user_id == user_id_int).count()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    query = db.query(Case).filter(Case.user_id == user_id_int)
+    total = query.count()
+    
     cases = (
-        db.query(Case)
-        .filter(Case.user_id == user_id_int)
+        query
         .order_by(Case.created_at.desc())
         .offset(offset)
         .limit(limit)
