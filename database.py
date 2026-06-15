@@ -585,6 +585,13 @@ def delete_case(db: Session, case_id: int) -> bool:
         db.rollback()
         raise
 
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to update.
+        lockout_duration_minutes: Duration to lock out the email after max
+            failed attempts are reached (default: 15 minutes).
+        max_failed_attempts: Number of consecutive failures that trigger a
+            lockout (default: 5).
 
 def create_case_document(
     db: Session,
@@ -610,6 +617,10 @@ def create_case_document(
     db.refresh(doc)
     return doc
 
+        db.commit()
+        db.refresh(otp)
+        return True
+    return False
 
 def create_case_record(
     db: Session,
@@ -780,11 +791,13 @@ def submit_user_feedback(
         satisfaction_rating=satisfaction_rating,
         feedback_text=feedback_text,
     )
-    db.add(feedback)
-    db.commit()
-    db.refresh(feedback)
-    return feedback
 
+def reset_otp_failed_attempts(db: Session, otp_id: int) -> bool:
+    """Reset the failed-attempt counter and any lockout on successful verification.
+
+    Args:
+        db: Active SQLAlchemy database session.
+        otp_id: Primary-key ID of the OTPVerification record to reset.
 
 def get_user_feedback(db: Session, user_id: int) -> List[UserFeedback]:
     """Get feedback history for a user"""
@@ -814,8 +827,11 @@ def update_user_last_login(db: Session, user_id: int) -> User:
     if user:
         user.last_login = dt.datetime.now(dt.timezone.utc)
         db.commit()
-        db.refresh(user)
-    return user
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
 
 
 # Thread lock for OTP rate-limit enforcement (single source of truth).
@@ -872,8 +888,16 @@ def mark_otp_as_used(db: Session, otp_id: int) -> bool:
     if otp:
         otp.is_used = True
         db.commit()
+        try:
+            from core.embedding_engine import get_vector_store
+            vs = get_vector_store()
+            vs.delete(case_id)
+        except Exception as ev:
+            logger.warning(f"Failed to auto-invalidate vector store on case deletion: {ev}")
         return True
-    return False
+    except Exception:
+        db.rollback()
+        raise
 
 
 
