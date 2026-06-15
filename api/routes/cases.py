@@ -473,12 +473,16 @@ async def list_cases(
     try:
         user_id_int = int(current_user.user_id)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID")
-
-    total = db.query(Case).filter(Case.user_id == user_id_int).count()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    query = db.query(Case).filter(Case.user_id == user_id_int)
+    total = query.count()
+    
     cases = (
-        db.query(Case)
-        .filter(Case.user_id == user_id_int)
+        query
         .order_by(Case.created_at.desc())
         .offset(offset)
         .limit(limit)
