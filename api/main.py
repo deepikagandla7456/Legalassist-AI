@@ -32,8 +32,15 @@ from api.validation import (
 )
 from database import init_db
 
+# Import versioning
+from api.versioning import (
+    get_version_registry,
+    DeprecationMiddleware,
+    VersionedRouter,
+)
+
 # Import routes
-from api.routes import documents, cases, reports, analytics, deadlines, auth, health, case_search, speech, document_verification, argument_strength, deadline_engine, efiling, hybrid_search
+from api.routes import documents, cases, reports, analytics, deadlines, auth, health, webhooks
 
 logger = structlog.get_logger(__name__)
 
@@ -107,6 +114,12 @@ def create_app() -> FastAPI:
         middleware=middleware
     )
     
+    # Initialize API versioning
+    version_registry = get_version_registry()
+    
+    # Add deprecation middleware for API responses
+    app.add_middleware(DeprecationMiddleware)
+    
     # Initialize validation config from settings
     ValidationConfig.from_settings(settings)
     
@@ -128,31 +141,36 @@ def create_app() -> FastAPI:
     # Include Routers
     # ========================================================================
     
+    # Create versioned router
+    versioned_router = VersionedRouter(prefix="/api", default_version="v1")
+    
+    # Health check (no versioning)
     app.include_router(health.router)
-    app.include_router(documents.router)
-    app.include_router(cases.router)
-    app.include_router(reports.router)
-    app.include_router(analytics.router)
-    app.include_router(deadlines.router)
-    app.include_router(auth.router)
-    app.include_router(case_search.router)  # Case search and precedent matching
-    app.include_router(speech.router)
-    app.include_router(document_verification.router)
-    app.include_router(argument_strength.router)
-    app.include_router(deadline_engine.router)
-    app.include_router(efiling.router)
-    app.include_router(hybrid_search.router)  # Cross-jurisdictional hybrid search (RRF + re-ranking)
+    
+    # API v1 routes (prefixed with /api/v1)
+    v1_router = APIRouter(prefix="/api/v1")
+    v1_router.include_router(documents.router, prefix="/documents")
+    v1_router.include_router(cases.router, prefix="/cases")
+    v1_router.include_router(reports.router, prefix="/reports")
+    v1_router.include_router(analytics.router, prefix="/analytics")
+    v1_router.include_router(deadlines.router, prefix="/deadlines")
+    v1_router.include_router(auth.router, prefix="/auth")
+    v1_router.include_router(webhooks.router, prefix="/webhooks")
+    app.include_router(v1_router)
+    
+    # API v2 routes (with backward compatibility)
+    v2_router = APIRouter(prefix="/api/v2")
+    v2_router.include_router(documents.router, prefix="/documents")
+    v2_router.include_router(cases.router, prefix="/cases")
+    v2_router.include_router(reports.router, prefix="/reports")
+    v2_router.include_router(analytics.router, prefix="/analytics")
+    v2_router.include_router(deadlines.router, prefix="/deadlines")
+    v2_router.include_router(auth.router, prefix="/auth")
+    v2_router.include_router(webhooks.router, prefix="/webhooks")
+    app.include_router(v2_router)
     # Model feedback & optimization
     from api.routes import models as models_router
     app.include_router(models_router.router)
-
-    # HA WebSocket endpoints (multiplexing, reconnection, Redis bridge)
-    from api.websockets.router import register_ha_websocket_endpoints
-    register_ha_websocket_endpoints(app)
-
-    # Legacy case-timeline WebSocket endpoint
-    from api.websockets.case_timeline import register_case_timeline_endpoint
-    register_case_timeline_endpoint(app)
     
     # ========================================================================
     # Global Exception Handlers
